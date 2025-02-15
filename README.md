@@ -4,10 +4,10 @@ This tool allows you to check for differences in endpoint responses before and a
 
 ## How to run
 
-- **Short option**  
-If you are on MacOS (AArch64), just run `./response_checker <FILENAME>`.
+- **Download binary**  
+Download your preferred version from [releases](https://github.com/drew458/release-sanity-checker/releases) and just run `./response_checker <FILENAME>`.
 
-- **Long option**  
+- **Container**  
 Assuming you have Podman or Docker installed on your machine:
     - `podman build -t response-checker .`
     - `podman run -v "<FILENAME>:/app/config.json" -v response-checker /app/config.json`  
