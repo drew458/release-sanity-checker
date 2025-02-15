@@ -1,1 +1,7 @@
-/.idea
+venv/
+target/
+.idea/
+personal/
+.data/
+data.db
+.DS_Store

@@ -1,0 +1,11 @@
+{
+    "url": "https://example.org",
+    "requests": [
+        {
+            "id": "1",
+            "headers": {
+                "Content-Type": "application/json"
+            }
+        }
+    ]
+}
