@@ -29,12 +29,6 @@ jobs:
           command: build
           args: --release --target x86_64-unknown-linux-gnu
 
-      - name: Get Binary Name
-        id: get_binary
-        run: |
-          BINARY_NAME=$(cargo metadata --format-version 1 | jq -r '.packages[0].name')
-          echo "binary_name=$BINARY_NAME" >> $GITHUB_OUTPUT
-
       - name: Create Release
         id: create_release
         uses: actions/create-release@v1
@@ -52,6 +46,6 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: ./target/x86_64-unknown-linux-gnu/release/${{ steps.get_binary.outputs.binary_name }}
-          asset_name: ${{ steps.get_binary.outputs.binary_name }}-x86_64-linux
+          asset_path: ./target/x86_64-unknown-linux-gnu/release/response_checker
+          asset_name: response_checker-x86_64-linux
           asset_content_type: application/octet-stream
