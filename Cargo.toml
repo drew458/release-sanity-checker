@@ -1,6 +1,6 @@
 [package]
 name = "response_checker"
-version = "0.1.0"
+version = "0.1.2"
 edition = "2021"
 
 [dependencies]
@@ -16,7 +16,6 @@ lto = true         # Enable Link-Time Optimization for better performance
 codegen-units = 1  # Compile the crate in a single codegen unit for better optimization, but slower compilation
 opt-level = 3      # Maximum optimization level for release builds
 strip = true       # Strip symbols from the binary for smaller size (and slightly faster execution, negligible in most cases)
-# panic = 'abort'    # Abort on panic for slightly smaller binary and potentially faster panic handling (less safe than 'unwind')
 
 [profile.release.build-override] # Override for dependencies during release builds
 opt-level = 3      # Apply same optimization level to dependencies as well

@@ -3,50 +3,52 @@ name: Rust Release Build
 on:
   push:
     tags:
-      - '*'
+      - 'v*'
 
 jobs:
   build:
-    name: Build and Release
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        include:
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
+    name: Build Release Binary
+    runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+      - name: Install Rust toolchain
+        uses: actions-rs/toolchain@v1
         with:
-          targets: ${{ matrix.target }}
-
-      - name: Install Dependencies (if cross-compiling)
-        run: |
-          if [ "${{ matrix.target }}" = "aarch64-unknown-linux-gnu" ]; then
-            sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
-          fi
+          toolchain: stable
+          target: x86_64-unknown-linux-gnu
+          override: true
 
       - name: Build Release Binary
-        run: cargo build --release --target=${{ matrix.target }}
+        uses: actions-rs/cargo@v1
+        with:
+          command: build
+          args: --release --target x86_64-unknown-linux-gnu
 
       - name: Get Binary Name
         id: get_binary
-        run: echo "BINARY_NAME=$(basename $(cargo metadata --format-version=1 --no-deps | jq -r '.packages[0].targets[0].name'))" >> $GITHUB_ENV
+        run: |
+          BINARY_NAME=$(cargo metadata --format-version 1 | jq -r '.packages[0].name')
+          echo "binary_name=$BINARY_NAME" >> $GITHUB_OUTPUT
 
-      - name: Rename Binary
-        run: mv target/${{ matrix.target }}/release/${{ env.BINARY_NAME }} target/${{ matrix.target }}/release/${{ env.BINARY_NAME }}-${{ matrix.target }}
-
-      - name: Upload Binary to Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ github.ref_name }}
-          name: Release ${{ github.ref_name }}
-          draft: false
-          prerelease: false
-          files: target/${{ matrix.target }}/release/${{ env.BINARY_NAME }}-${{ matrix.target }}
+      - name: Create Release
+        id: create_release
+        uses: actions/create-release@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ github.ref }}
+          release_name: Release ${{ github.ref }}
+          draft: false
+          prerelease: false
+
+      - name: Upload Release Asset
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ./target/x86_64-unknown-linux-gnu/release/${{ steps.get_binary.outputs.binary_name }}
+          asset_name: ${{ steps.get_binary.outputs.binary_name }}-x86_64-linux
+          asset_content_type: application/octet-stream
