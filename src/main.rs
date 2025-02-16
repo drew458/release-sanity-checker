@@ -29,6 +29,8 @@ struct RequestResponse {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 struct RequestConfig {
     id: String,
+    url: String,
+    #[serde(default)]
     headers: HashMap<String, String>,
     #[serde(default)]
     body: Value,
@@ -36,7 +38,6 @@ struct RequestConfig {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 struct Config {
-    url: String,
     requests: Vec<RequestConfig>,
 }
 
@@ -329,30 +330,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         // Process config files concurrently
         file_tasks.spawn(async move {
             let config: Config = serde_json::from_str(&fs::read_to_string(&config_path).await?)?;
-            let config_url = Arc::new(config.url);
 
             let mut request_tasks = JoinSet::new();
 
             // Process requests inside config file concurrently
             for request_config in config.requests {
-                let url = Arc::clone(&config_url);
                 let db = db.clone();
 
                 request_tasks.spawn(async move {
                     println!(
                         "Checking request '{}' of URL '{}'",
-                        request_config.id, url
+                        request_config.id, request_config.url
                     );
 
                     let current_response =
-                        fetch_response(&url, &request_config.headers, &request_config.body).await?;
+                        fetch_response(&request_config.url, &request_config.headers, &request_config.body).await?;
 
                     if !baseline_mode {
                         // Try to find a previous response for that request (identified by id and URL).
                         // If it's found, check the differences
                         if let Some(prev_response) = find_previous_response(
                             &request_config.id,
-                            &url,
+                            &request_config.url,
                             headers_ignored,
                             db.as_ref(),
                         )
@@ -365,7 +364,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                             ) {
                                 print_differences(
                                     &request_config.id,
-                                    &url,
+                                    &request_config.url,
                                     &prev_response,
                                     &current_response,
                                     headers_ignored,
@@ -373,7 +372,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                             } else {
                                 println!(
                                     "Request '{}' of URL '{}' has not changed.",
-                                    request_config.id, url
+                                    request_config.id, request_config.url
                                 );
                             }
                         }
@@ -398,7 +397,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
                     sqlx::query(&query_str)
                         .bind(&request_config.id)
-                        .bind(url.as_ref())
+                        .bind(&request_config.url)
                         .bind(current_response.status_code)
                         .bind(&current_response.body)
                         .bind(serde_json::to_string(&current_response.headers)?)
