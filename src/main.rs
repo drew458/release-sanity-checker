@@ -137,8 +137,13 @@ fn print_differences(
     headers_ignored: bool,
 ) {
     println!();
-    println!("-----------------------------------------------------------------------------------------");
-    println!("Differences detected for request: '{}' of URL '{}'", request_id, url);
+    println!(
+        "-----------------------------------------------------------------------------------------"
+    );
+    println!(
+        "Differences detected for request: '{}' of URL '{}'",
+        request_id, url
+    );
 
     if response1.status_code != response2.status_code {
         println!("  Status Code Difference:");
@@ -214,7 +219,9 @@ fn print_differences(
         println!("  No Body Difference.");
     }
 
-    println!("-----------------------------------------------------------------------------------------");
+    println!(
+        "-----------------------------------------------------------------------------------------"
+    );
     println!();
 }
 
@@ -343,8 +350,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                         request_config.id, request_config.url
                     );
 
-                    let current_response =
-                        fetch_response(&request_config.url, &request_config.headers, &request_config.body).await?;
+                    let current_response = fetch_response(
+                        &request_config.url,
+                        &request_config.headers,
+                        &request_config.body,
+                    )
+                    .await?;
 
                     if !baseline_mode {
                         // Try to find a previous response for that request (identified by id and URL).
