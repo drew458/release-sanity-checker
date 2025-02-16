@@ -121,12 +121,49 @@ fn are_responses_equal(
     response1: &HttpResponseData,
     response2: &HttpResponseData,
     headers_ignored: bool,
-) -> bool {
-    if headers_ignored {
-        response1.status_code == response2.status_code && response1.body == response2.body
-    } else {
-        response1 == response2
+) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+    if response1.status_code != response2.status_code {
+        return Ok(false);
     }
+
+    // Try to convert the response bodies to JSON.
+    // Is successful, compare the two JSON object, otherwise compare them as strings
+    if let Ok(body1) = serde_json::from_str::<Value>(&response1.body) {
+        if let Ok(body2) = serde_json::from_str::<Value>(&response2.body) {
+            if body1 != body2 {
+                return Ok(false);
+            }
+        }
+    } else {
+        if response1.body != response2.body {
+            return Ok(false);
+        }
+    }
+
+    if !headers_ignored {
+        for (key1, val1) in response1.headers.iter() {
+            match response2.headers.get(key1) {
+                Some(val2) => {
+                    if val1 != val2 {
+                        return Ok(false);
+                    }
+                }
+                None => return Ok(false),
+            }
+        }
+        for (key2, val2) in response2.headers.iter() {
+            match response1.headers.get(key2) {
+                Some(val1) => {
+                    if val2 != val1 {
+                        return Ok(false);
+                    }
+                }
+                None => return Ok(false),
+            }
+        }
+    }
+
+    return Ok(true);
 }
 
 fn print_differences(
@@ -370,7 +407,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                 &prev_response,
                                 &current_response,
                                 headers_ignored,
-                            ) {
+                            )? {
                                 print_differences(
                                     &request_config.id,
                                     &request_config.url,
