@@ -3,5 +3,5 @@ target/
 .idea/
 personal/
 .data/
-data.db
+release-sanity-checker-data.db
 .DS_Store

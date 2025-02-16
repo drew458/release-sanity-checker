@@ -129,12 +129,15 @@ fn are_responses_equal(
 }
 
 fn print_differences(
-    response_name: &str,
+    request_id: &str,
+    url: &str,
     response1: &HttpResponseData,
     response2: &HttpResponseData,
     headers_ignored: bool,
 ) {
-    println!("Differences detected for request: '{}'", response_name);
+    println!();
+    println!("-----------------------------------------------------------------------------------------");
+    println!("Differences detected for request: '{}' of URL '{}'", request_id, url);
 
     if response1.status_code != response2.status_code {
         println!("  Status Code Difference:");
@@ -209,6 +212,9 @@ fn print_differences(
     } else {
         println!("  No Body Difference.");
     }
+
+    println!("-----------------------------------------------------------------------------------------");
+    println!();
 }
 
 #[tokio::main]
@@ -224,6 +230,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut config_paths: Vec<PathBuf> = Vec::new();
     let mut mode_file = true; // Default mode is --file
     let mut headers_ignored = false;
+    let mut baseline_mode = false;
 
     let mut arg_iter = args.iter().skip(1);
 
@@ -273,6 +280,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             "--ignore-headers" => {
                 headers_ignored = true;
             }
+            "--baseline" => {
+                baseline_mode = true;
+            }
             config_path if mode_file => {
                 // Default to file mode if no flag and it's the first non-flag arg
                 config_paths.push(PathBuf::from(config_path));
@@ -292,7 +302,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let db = Arc::new(
         SqlitePool::connect_with(
-            SqliteConnectOptions::from_str("sqlite://release-sanity-checker-data.db")?.create_if_missing(true),
+            SqliteConnectOptions::from_str("sqlite://release-sanity-checker-data.db")?
+                .create_if_missing(true),
         )
         .await?,
     );
@@ -314,7 +325,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     for config_path in config_paths {
         let db = db.clone();
-        let headers_ignored = headers_ignored;
 
         // Process config files concurrently
         file_tasks.spawn(async move {
@@ -323,56 +333,77 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
             let mut request_tasks = JoinSet::new();
 
-            // Process requests concurrently
+            // Process requests inside config file concurrently
             for request_config in config.requests {
                 let url = Arc::clone(&config_url);
                 let db = db.clone();
 
                 request_tasks.spawn(async move {
-                    println!("\nChecking request: '{}' of URL '{}'", request_config.id, url);
+                    println!(
+                        "Checking request '{}' of URL '{}'",
+                        request_config.id, url
+                    );
 
                     let current_response =
                         fetch_response(&url, &request_config.headers, &request_config.body).await?;
 
-                    if let Some(prev_response) = find_previous_response(
-                        &request_config.id,
-                        &url,
-                        headers_ignored,
-                        db.as_ref(),
-                    )
-                    .await?
-                    {
-                        if !are_responses_equal(&prev_response, &current_response, headers_ignored)
+                    if !baseline_mode {
+                        // Try to find a previous response for that request (identified by id and URL).
+                        // If it's found, check the differences
+                        if let Some(prev_response) = find_previous_response(
+                            &request_config.id,
+                            &url,
+                            headers_ignored,
+                            db.as_ref(),
+                        )
+                        .await?
                         {
-                            print_differences(
-                                &request_config.id,
+                            if !are_responses_equal(
                                 &prev_response,
                                 &current_response,
                                 headers_ignored,
-                            );
-                        } else {
-                            println!(
-                                "Request '{}' of URL '{}' has not changed.",
-                                request_config.id, url
-                            );
+                            ) {
+                                print_differences(
+                                    &request_config.id,
+                                    &url,
+                                    &prev_response,
+                                    &current_response,
+                                    headers_ignored,
+                                );
+                            } else {
+                                println!(
+                                    "Request '{}' of URL '{}' has not changed.",
+                                    request_config.id, url
+                                );
+                            }
                         }
                     }
 
-                    sqlx::query(
+                    let mut query_str =
                         "INSERT INTO response (request_id, url, status_code, body, headers)
                         VALUES (?, ?, ?, ?, ?)
-                        ON CONFLICT (request_id, url)
-                        DO UPDATE SET status_code = excluded.status_code,
+                        ON CONFLICT (request_id, url) "
+                            .to_string();
+
+                    // If we are doing the baseline, update the previous response
+                    if baseline_mode {
+                        query_str.push_str(
+                            "DO UPDATE SET status_code = excluded.status_code,
                                     body = excluded.body,
                                     headers = excluded.headers",
-                    )
-                    .bind(&request_config.id)
-                    .bind(url.as_ref())
-                    .bind(current_response.status_code)
-                    .bind(&current_response.body)
-                    .bind(serde_json::to_string(&current_response.headers).unwrap_or_default())
-                    .execute(db.as_ref())
-                    .await?;
+                        );
+                    } else {
+                        query_str.push_str("DO NOTHING");
+                    }
+
+                    sqlx::query(&query_str)
+                        .bind(&request_config.id)
+                        .bind(url.as_ref())
+                        .bind(current_response.status_code)
+                        .bind(&current_response.body)
+                        .bind(serde_json::to_string(&current_response.headers)?)
+                        .execute(db.as_ref())
+                        .await?;
 
                     Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
                 });
@@ -401,6 +432,7 @@ fn print_usage(program_name: &str) {
     println!("  --file <config_path>          Run with a specific config file (default mode).");
     println!("  --directory <dir_path>        Run with all config files found in the directory.");
     println!("  --ignore-headers              Do not look for changes in response headers.");
+    println!("  --baseline                    Build the baseline for the requests.");
     println!();
     println!("Examples:");
     println!(
