@@ -1,7 +1,7 @@
 # --- Stage 1: Build ---
     FROM rust:1.75-slim-bookworm AS builder
 
-    WORKDIR /usr/src/response_checker
+    WORKDIR /usr/src/release-sanity-checker
     
     COPY Cargo.toml Cargo.lock* ./
     
@@ -20,9 +20,9 @@
     
     WORKDIR /app
     
-    COPY --from=builder /usr/src/response_checker/target/release/response_checker ./
+    COPY --from=builder /usr/src/release-sanity-checker/target/release/release-sanity-checker ./
     
     # Command to run the application.
     # Now only expects CONFIG_FILE path as argument (default --file mode)
     # Or can be run with --directory <dir_path>
-    CMD ["./response_checker", "config.json"]
+    CMD ["./release-sanity-checker", "config.json"]

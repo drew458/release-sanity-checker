@@ -215,14 +215,15 @@ fn print_differences(
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let args: Vec<String> = env::args().collect();
     let program_name = args[0].clone();
-    let mut config_paths: Vec<PathBuf> = Vec::new();
-    let mut mode_file = true; // Default mode is --file
-    let mut headers_ignored = false;
 
     if args.len() > 1 && args[1] == "--help" {
         print_usage(&program_name);
         return Ok(());
     }
+
+    let mut config_paths: Vec<PathBuf> = Vec::new();
+    let mut mode_file = true; // Default mode is --file
+    let mut headers_ignored = false;
 
     let mut arg_iter = args.iter().skip(1);
 
@@ -291,7 +292,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let db = Arc::new(
         SqlitePool::connect_with(
-            SqliteConnectOptions::from_str("sqlite://data.db")?.create_if_missing(true),
+            SqliteConnectOptions::from_str("sqlite://release-sanity-checker-data.db")?.create_if_missing(true),
         )
         .await?,
     );

@@ -1,5 +1,5 @@
 [package]
-name = "response_checker"
+name = "release-sanity-checker"
 version = "0.1.4"
 edition = "2021"
 
