@@ -1,3 +1,4 @@
+use colored::*;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -134,10 +135,8 @@ fn are_responses_equal(
                 return Ok(false);
             }
         }
-    } else {
-        if response1.body != response2.body {
-            return Ok(false);
-        }
+    } else if response1.body != response2.body {
+        return Ok(false);
     }
 
     if !headers_ignored {
@@ -163,7 +162,7 @@ fn are_responses_equal(
         }
     }
 
-    return Ok(true);
+    Ok(true)
 }
 
 fn print_differences(
@@ -174,18 +173,24 @@ fn print_differences(
     headers_ignored: bool,
 ) {
     println!(
-        "\n-----------------------------------------------------------------------------------------"
+        "\n❌-----------------------------------------------------------------------------------------❌"
     );
     println!(
-        "Differences detected for request: '{}' of URL '{}'",
-        request_id, url
+        "{}",
+        format!(
+            "Differences detected for request: '{}' of URL '{}'",
+            request_id, url
+        )
+        .yellow()
     );
 
     if response1.status_code != response2.status_code {
         println!("  Status Code Difference:");
-        println!("    Before: {}", response1.status_code);
-        println!("    After:  {}", response2.status_code);
+        println!("    Before: {}", response1.status_code.to_string().green());
+        println!("    After:  {}", response2.status_code.to_string().red());
     }
+
+    let diff_preview_len = 200;
 
     if !headers_ignored {
         let headers1 = &response1.headers;
@@ -197,14 +202,37 @@ fn print_differences(
         for (key, value1) in headers1.iter() {
             if let Some(value2) = headers2.get(key) {
                 if value1 != value2 {
+                    let min_len = std::cmp::min(value1.len(), value2.len());
+
                     println!("    Changed Header: {}", key);
-                    println!("      Before: {}", value1);
-                    println!("      After:  {}", value2);
+                    println!(
+                        "      Before (preview): {}",
+                        value1
+                            .chars()
+                            .take(min_len.min(diff_preview_len))
+                            .collect::<String>()
+                            .green()
+                    );
+                    println!(
+                        "      After (preview):  {}",
+                        value2
+                            .chars()
+                            .take(min_len.min(diff_preview_len))
+                            .collect::<String>()
+                            .red()
+                    );
                     header_differences = true;
                 }
             } else {
                 println!("    Removed Header: {}", key);
-                println!("      Value: {}", value1);
+                println!(
+                    "      Value (preview): {}",
+                    value1
+                        .chars()
+                        .take(value1.len().min(diff_preview_len))
+                        .collect::<String>()
+                        .red()
+                );
                 header_differences = true;
             }
         }
@@ -212,7 +240,7 @@ fn print_differences(
         for (key, value2) in headers2.iter() {
             if !headers1.contains_key(key) {
                 println!("    Added Header: {}", key);
-                println!("      Value: {}", value2);
+                println!("      Value (preview): {}", value2.red());
                 header_differences = true;
             }
         }
@@ -229,7 +257,6 @@ fn print_differences(
         let len1 = response1.body.len();
         let len2 = response2.body.len();
         let min_len = std::cmp::min(len1, len2);
-        let diff_preview_len = 100;
 
         println!(
             "    Before (preview): {}",
@@ -238,6 +265,7 @@ fn print_differences(
                 .chars()
                 .take(min_len.min(diff_preview_len))
                 .collect::<String>()
+                .green()
         );
         println!(
             "    After  (preview): {}",
@@ -246,17 +274,22 @@ fn print_differences(
                 .chars()
                 .take(min_len.min(diff_preview_len))
                 .collect::<String>()
+                .red()
         );
 
         if len1 != len2 {
-            println!("    Body length changed: Before: {}, After: {}", len1, len2);
+            println!(
+                "    Body length changed: Before: {}, After: {}",
+                len1.to_string().green(),
+                len2.to_string().red()
+            );
         }
     } else {
         println!("  No Body Difference.");
     }
 
     println!(
-        "-----------------------------------------------------------------------------------------\n"
+        "❌-----------------------------------------------------------------------------------------❌"
     );
 }
 
@@ -417,7 +450,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                 );
                             } else {
                                 println!(
-                                    "Request '{}' of URL '{}' has not changed.",
+                                    "\n✅ Request '{}' of URL '{}' has not changed. ✅",
                                     request_config.id, request_config.url
                                 );
                             }
@@ -466,7 +499,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         result??;
     }
 
-    println!("\nResponse check completed.");
+    if baseline_mode {
+        println!("\nBaseline built successfully.");
+    } else {
+        println!("\nResponse check completed.");
+    }
+
     Ok(())
 }
 
