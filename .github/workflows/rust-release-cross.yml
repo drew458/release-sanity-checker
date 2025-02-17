@@ -17,10 +17,12 @@ jobs:
           - os-name: Windows-x86_64
             runs-on: windows-latest
             target: x86_64-pc-windows-msvc
+            command: build
 
           - os-name: Macos-aarch64
             runs-on: macos-latest
             target: aarch64-apple-darwin
+            command: build
 
           #- os-name: Linux-x86_64
             #runs-on: ubuntu-24.04
