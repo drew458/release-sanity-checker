@@ -140,25 +140,8 @@ fn are_responses_equal(
     }
 
     if !headers_ignored {
-        for (key1, val1) in response1.headers.iter() {
-            match response2.headers.get(key1) {
-                Some(val2) => {
-                    if val1 != val2 {
-                        return Ok(false);
-                    }
-                }
-                None => return Ok(false),
-            }
-        }
-        for (key2, val2) in response2.headers.iter() {
-            match response1.headers.get(key2) {
-                Some(val1) => {
-                    if val2 != val1 {
-                        return Ok(false);
-                    }
-                }
-                None => return Ok(false),
-            }
+        if response1.headers != response2.headers {
+            return Ok(false)
         }
     }
 
