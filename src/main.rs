@@ -1,5 +1,5 @@
 use colored::*;
-use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
+use reqwest::{header::{HeaderMap, HeaderName, HeaderValue}, Client};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sqlx::{sqlite::SqliteConnectOptions, Pool, Row, Sqlite, SqlitePool};
@@ -9,7 +9,7 @@ use std::{
     path::PathBuf,
     process,
     str::FromStr,
-    sync::Arc,
+    sync::Arc, time::Duration,
 };
 use tokio::{fs, task::JoinSet};
 
@@ -46,8 +46,8 @@ async fn fetch_response(
     url: &str,
     headers: &HashMap<String, String>,
     body: &Value,
+    client: &Client
 ) -> Result<HttpResponseData, reqwest::Error> {
-    let client = reqwest::Client::new();
 
     let request_builder = if body.is_null() {
         client.get(url)
@@ -90,9 +90,9 @@ async fn find_previous_response(
     db: &Pool<Sqlite>,
 ) -> Result<Option<HttpResponseData>, Box<dyn std::error::Error + Send + Sync>> {
     let query = if headers_ignored {
-        "SELECT status_code, body FROM response WHERE url = ? AND request_id = ?"
+        "SELECT baseline_status_code, baseline_body FROM response WHERE url = ? AND request_id = ?"
     } else {
-        "SELECT status_code, body, headers FROM response WHERE url = ? AND request_id = ?"
+        "SELECT baseline_status_code, baseline_body, baseline_headers FROM response WHERE url = ? AND request_id = ?"
     };
 
     match sqlx::query(query)
@@ -103,15 +103,15 @@ async fn find_previous_response(
     {
         Some(row) => {
             let headers = if !headers_ignored {
-                serde_json::from_str(row.get("headers")).unwrap_or_default()
+                serde_json::from_str(row.get("baseline_headers")).unwrap_or_default()
             } else {
                 HashMap::new()
             };
 
             Ok(Some(HttpResponseData {
-                status_code: row.get("status_code"),
+                status_code: row.get("baseline_status_code"),
                 headers,
-                body: row.get("body"),
+                body: row.get("baseline_body"),
             }))
         }
         None => Ok(None),
@@ -385,11 +385,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     );
     let _ = sqlx::query(
         "CREATE TABLE IF NOT EXISTS response (
-                request_id    TEXT NOT NULL,
-                url           TEXT NOT NULL, 
-                status_code   INTEGER NOT NULL,
-                headers       TEXT,
-                body          TEXT,
+                request_id              TEXT NOT NULL,
+                url                     TEXT NOT NULL, 
+                baseline_status_code    INTEGER,
+                checktime_status_code   INTEGER,
+                baseline_headers        TEXT,
+                checktime_headers       TEXT,
+                baseline_body           TEXT,
+                checktime_body          TEXT,
                 PRIMARY KEY(request_id, url)
             );
             CREATE INDEX IF NOT EXISTS url_idx ON response(url);",
@@ -397,10 +400,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     .execute(db.as_ref())
     .await;
 
+    let client = Arc::from(reqwest::ClientBuilder::new()
+        .timeout(Duration::from_secs(5))
+        .build()?
+    );
+
     let mut file_tasks = JoinSet::new();
 
     for config_path in config_paths {
         let db = db.clone();
+        let client = client.clone();
 
         // Process config files concurrently
         file_tasks.spawn(async move {
@@ -411,6 +420,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             // Process requests inside config file concurrently
             for request_config in config.requests {
                 let db = db.clone();
+                let client = client.clone();
 
                 request_tasks.spawn(async move {
                     println!(
@@ -422,6 +432,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                         &request_config.url,
                         &request_config.headers,
                         &request_config.body,
+                        &client
                     )
                     .await?;
 
@@ -457,21 +468,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                         }
                     }
 
-                    let mut query_str =
-                        "INSERT INTO response (request_id, url, status_code, body, headers)
-                        VALUES (?, ?, ?, ?, ?)
-                        ON CONFLICT (request_id, url) "
-                            .to_string();
+                    let query_str: String;
 
-                    // If we are doing the baseline, update the previous response
                     if baseline_mode {
-                        query_str.push_str(
-                            "DO UPDATE SET status_code = excluded.status_code,
-                                    body = excluded.body,
-                                    headers = excluded.headers",
-                        );
+                        query_str =
+                            "INSERT INTO response (request_id, url, baseline_status_code, baseline_body, baseline_headers)
+                            VALUES (?, ?, ?, ?, ?)
+                            ON CONFLICT (request_id, url) DO UPDATE SET baseline_status_code = excluded.baseline_status_code,
+                                    baseline_body = excluded.baseline_body,
+                                    baseline_headers = excluded.baseline_headers".to_string();
                     } else {
-                        query_str.push_str("DO NOTHING");
+                        query_str =
+                            "INSERT INTO response (request_id, url, checktime_status_code, checktime_body, checktime_headers)
+                            VALUES (?, ?, ?, ?, ?)
+                            ON CONFLICT (request_id, url) DO UPDATE SET checktime_status_code = excluded.checktime_status_code,
+                                    checktime_body = excluded.checktime_body,
+                                    checktime_headers = excluded.checktime_headers".to_string();
                     }
 
                     sqlx::query(&query_str)
