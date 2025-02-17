@@ -1,9 +1,9 @@
 name: Rust Release Build
 
 on:
-  push:
-    tags:
-      - 'v*'
+  #push:
+    #tags:
+      #- 'v*'
 
 permissions:
   contents: write
