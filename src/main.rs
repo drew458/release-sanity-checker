@@ -24,7 +24,10 @@ struct HttpResponseData {
 #[derive(Serialize, Deserialize, Debug)]
 struct RequestResponse {
     request_id: String,
-    response: HttpResponseData,
+    url: String,
+    status_code: u16,
+    headers: String,
+    body: String,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -456,47 +459,66 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                         }
                     }
 
-                    let query_str: String;
+                    let res = RequestResponse { 
+                        request_id: request_config.id, 
+                        url: request_config.url, 
+                        status_code: current_response.status_code, 
+                        headers: serde_json::to_string(&current_response.headers)?, 
+                        body: current_response.body
+                    };
 
-                    if baseline_mode {
-                        query_str =
-                            "INSERT INTO response (request_id, url, baseline_status_code, baseline_body, baseline_headers)
-                            VALUES (?, ?, ?, ?, ?)
-                            ON CONFLICT (request_id, url) DO UPDATE SET baseline_status_code = excluded.baseline_status_code,
-                                    baseline_body = excluded.baseline_body,
-                                    baseline_headers = excluded.baseline_headers".to_string();
-                    } else {
-                        query_str =
-                            "INSERT INTO response (request_id, url, checktime_status_code, checktime_body, checktime_headers)
-                            VALUES (?, ?, ?, ?, ?)
-                            ON CONFLICT (request_id, url) DO UPDATE SET checktime_status_code = excluded.checktime_status_code,
-                                    checktime_body = excluded.checktime_body,
-                                    checktime_headers = excluded.checktime_headers".to_string();
-                    }
-
-                    sqlx::query(&query_str)
-                        .bind(&request_config.id)
-                        .bind(&request_config.url)
-                        .bind(current_response.status_code)
-                        .bind(&current_response.body)
-                        .bind(serde_json::to_string(&current_response.headers)?)
-                        .execute(db.as_ref())
-                        .await?;
-
-                    Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
+                    Ok::<RequestResponse, Box<dyn std::error::Error + Send + Sync>>(res)
                 });
             }
 
+            // Collect results from intermediate operations
+            let mut writes: Vec<RequestResponse> = Vec::new();
             while let Some(result) = request_tasks.join_next().await {
-                result??;
+                writes.push(result??);
             }
 
-            Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
+            Ok::<Vec<RequestResponse>, Box<dyn std::error::Error + Send + Sync>>(writes)
         });
     }
 
+    // Collect results from intermediate operations
+    let mut writes: Vec<RequestResponse> = Vec::new();
     while let Some(result) = file_tasks.join_next().await {
-        result??;
+        writes.extend(result??);
+    }
+
+    let query_str: String;
+
+    if baseline_mode {
+        query_str =
+            "INSERT INTO response (request_id, url, baseline_status_code, baseline_body, baseline_headers)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT (request_id, url) DO UPDATE SET baseline_status_code = excluded.baseline_status_code,
+                    baseline_body = excluded.baseline_body,
+                    baseline_headers = excluded.baseline_headers".to_string();
+    } else {
+        query_str =
+            "INSERT INTO response (request_id, url, checktime_status_code, checktime_body, checktime_headers)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT (request_id, url) DO UPDATE SET checktime_status_code = excluded.checktime_status_code,
+                    checktime_body = excluded.checktime_body,
+                    checktime_headers = excluded.checktime_headers".to_string();
+    }
+
+    // Perform all database writes in a single transaction.
+    {
+        let mut tx = db.begin().await?;
+        for write in writes {
+            sqlx::query(&query_str)
+                .bind(&write.request_id)
+                .bind(&write.url)
+                .bind(write.status_code)
+                .bind(&write.body)
+                .bind(&write.headers)
+                .execute(&mut *tx)
+                .await?;
+        }
+        tx.commit().await?;
     }
 
     if baseline_mode {
