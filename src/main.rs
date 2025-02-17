@@ -382,7 +382,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 .create_if_missing(true)
                 .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
                 .synchronous(sqlx::sqlite::SqliteSynchronous::Normal)
-                .locking_mode(sqlx::sqlite::SqliteLockingMode::Exclusive),
+                .locking_mode(sqlx::sqlite::SqliteLockingMode::Normal),
         )
         .await?,
     );
