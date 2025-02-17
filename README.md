@@ -5,7 +5,7 @@ This tool helps you ensure the consistency of your API responses over time. It f
 ## How to run
 
 - **Download binary**  
-Download your preferred version from [releases](https://github.com/drew458/release-sanity-checker/releases) and just run `./release-sanity-checker <FILENAME>`.
+Download your preferred version from [releases](https://github.com/drew458/release-sanity-checker/releases) and just run `release-sanity-checker <FILENAME>`.
 
 - **Container**  
 Assuming you have Podman or Docker installed on your machine:

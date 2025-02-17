@@ -379,7 +379,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let db = Arc::new(
         SqlitePool::connect_with(
             SqliteConnectOptions::from_str("sqlite://release-sanity-checker-data.db")?
-                .create_if_missing(true),
+                .create_if_missing(true)
+                .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+                .synchronous(sqlx::sqlite::SqliteSynchronous::Normal)
+                .locking_mode(sqlx::sqlite::SqliteLockingMode::Exclusive),
         )
         .await?,
     );

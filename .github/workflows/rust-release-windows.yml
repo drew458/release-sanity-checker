@@ -46,6 +46,6 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: ./target/x86_64-pc-windows-gnu/release/release-sanity-checker
-          asset_name: release-sanity-checker-x86_64-windows
+          asset_path: ./target/x86_64-pc-windows-gnu/release/release-sanity-checker.exe
+          asset_name: release-sanity-checker-x86_64-windows.exe
           asset_content_type: application/octet-stream
