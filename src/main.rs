@@ -55,14 +55,16 @@ async fn fetch_response(
         client.post(url).body(body.to_string())
     };
 
-    let mut header_map = HeaderMap::new();
-    headers.iter().for_each(|(k, v)| {
-        if let (Ok(k), Ok(v)) = (k.parse::<HeaderName>(), HeaderValue::from_str(v)) {
-            header_map.append(k, v);
-        } else {
-            eprintln!("Could not parse header {k}:{v}");
-        }
-    });
+    let header_map: reqwest::header::HeaderMap = headers
+        .iter()
+        .filter_map(|(k, v)| match (k.parse::<reqwest::header::HeaderName>(), v.parse()) {
+            (Ok(header_name), Ok(header_value)) => Some((header_name, header_value)),
+            _ => {
+                eprintln!("Could not parse header {}:{}", k, v);
+                None
+            }
+        })
+        .collect();
 
     let response = request_builder.headers(header_map).send().await?;
 
