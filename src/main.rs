@@ -1,5 +1,5 @@
 use colored::*;
-use reqwest::{header::{HeaderMap, HeaderName, HeaderValue}, Client};
+use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sqlx::{sqlite::SqliteConnectOptions, Pool, Row, Sqlite, SqlitePool};
@@ -9,9 +9,14 @@ use std::{
     path::PathBuf,
     process,
     str::FromStr,
-    sync::Arc, time::Duration,
+    sync::Arc,
+    time::Duration,
 };
-use tokio::{fs, task::JoinSet};
+use tokio::{
+    fs,
+    sync::{RwLock, Semaphore},
+    task::JoinSet,
+};
 
 #[derive(Serialize, Deserialize, PartialEq, Debug)]
 struct HttpResponseData {
@@ -49,9 +54,9 @@ async fn fetch_response(
     url: &str,
     headers: &HashMap<String, String>,
     body: &Value,
-    client: &Client
-) -> Result<HttpResponseData, reqwest::Error> {
-
+    client: &Client,
+    sempahore: &Semaphore,
+) -> Result<HttpResponseData, Box<dyn std::error::Error + Send + Sync>> {
     let request_builder = if body.is_null() {
         client.get(url)
     } else {
@@ -60,14 +65,18 @@ async fn fetch_response(
 
     let header_map: reqwest::header::HeaderMap = headers
         .iter()
-        .filter_map(|(k, v)| match (k.parse::<reqwest::header::HeaderName>(), v.parse()) {
-            (Ok(header_name), Ok(header_value)) => Some((header_name, header_value)),
-            _ => {
-                eprintln!("Could not parse header {}:{}", k, v);
-                None
-            }
-        })
+        .filter_map(
+            |(k, v)| match (k.parse::<reqwest::header::HeaderName>(), v.parse()) {
+                (Ok(header_name), Ok(header_value)) => Some((header_name, header_value)),
+                _ => {
+                    eprintln!("Could not parse header {}:{}", k, v);
+                    None
+                }
+            },
+        )
         .collect();
+
+    let _ = sempahore.acquire().await?;
 
     let response = request_builder.headers(header_map).send().await?;
 
@@ -146,7 +155,7 @@ fn are_responses_equal(
 
     if !headers_ignored {
         if response1.headers != response2.headers {
-            return Ok(false)
+            return Ok(false);
         }
     }
 
@@ -391,16 +400,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     .execute(db.as_ref())
     .await;
 
-    let client = Arc::from(reqwest::ClientBuilder::new()
-        .timeout(Duration::from_secs(5))
-        .build()?
+    let client = Arc::from(
+        reqwest::ClientBuilder::new()
+            .timeout(Duration::from_secs(5))
+            .build()?,
     );
+
+    let url_to_semaphore: Arc<RwLock<HashMap<String, Arc<Semaphore>>>> =
+        Arc::new(RwLock::new(HashMap::new()));
 
     let mut file_tasks = JoinSet::new();
 
     for config_path in config_paths {
         let db = db.clone();
         let client = client.clone();
+        let url_to_semaphore = url_to_semaphore.clone();
 
         // Process config files concurrently
         file_tasks.spawn(async move {
@@ -412,6 +426,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             for request_config in config.requests {
                 let db = db.clone();
                 let client = client.clone();
+                let url_to_semaphore = url_to_semaphore.clone();
 
                 request_tasks.spawn(async move {
                     println!(
@@ -419,11 +434,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                         request_config.id, request_config.url
                     );
 
+                    let mut exists = true;
+                    {
+                        if let None = url_to_semaphore.read().await.get(&request_config.url) {
+                            exists = false;
+                        }
+                    }
+
+                    if !exists {
+                        let mut url_to_semaphore = url_to_semaphore.write().await;
+                        url_to_semaphore
+                            .insert(request_config.url.clone(), Arc::new(Semaphore::new(200)));
+                    }
+
+                    let semaphore: Arc<Semaphore>;
+                    {
+                        let binding = url_to_semaphore.read().await;
+                        semaphore = binding.get(&request_config.url).cloned().expect(
+                            format!("Semaphore not found for URL {}", request_config.url).as_str(),
+                        );
+                    }
+
                     let current_response = fetch_response(
                         &request_config.url,
                         &request_config.headers,
                         &request_config.body,
-                        &client
+                        &client,
+                        &semaphore,
                     )
                     .await?;
 
@@ -459,12 +496,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                         }
                     }
 
-                    let res = RequestResponse { 
-                        request_id: request_config.id, 
-                        url: request_config.url, 
-                        status_code: current_response.status_code, 
-                        headers: serde_json::to_string(&current_response.headers)?, 
-                        body: current_response.body
+                    let res = RequestResponse {
+                        request_id: request_config.id,
+                        url: request_config.url,
+                        status_code: current_response.status_code,
+                        headers: serde_json::to_string(&current_response.headers)?,
+                        body: current_response.body,
                     };
 
                     Ok::<RequestResponse, Box<dyn std::error::Error + Send + Sync>>(res)
@@ -505,7 +542,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     checktime_headers = excluded.checktime_headers".to_string();
     }
 
-    // Perform all database writes in a single transaction.
+    // Perform all database writes in a single transaction
     {
         let mut tx = db.begin().await?;
         for write in writes {
