@@ -1,5 +1,5 @@
 use colored::*;
-use reqwest::Client;
+use reqwest::{Client, Response};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sqlx::{sqlite::SqliteConnectOptions, Pool, Row, Sqlite, SqlitePool};
@@ -24,6 +24,51 @@ struct HttpResponseData {
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     headers: HashMap<String, String>,
     body: String,
+}
+
+impl HttpResponseData {
+    async fn from_response(response: Response) -> Result<HttpResponseData, reqwest::Error> {
+        Ok(HttpResponseData {
+            status_code: response.status().as_u16(),
+            headers: response
+                .headers()
+                .iter()
+                .map(|(k, v)| {
+                    (
+                        k.as_str().to_string(),
+                        v.to_str().unwrap_or_default().to_string(),
+                    )
+                })
+                .collect(),
+            body: response.text().await?,
+        })
+    }
+
+    fn is_equal_to(&self, other: &HttpResponseData, headers_ignored: bool) -> bool {
+        if self.status_code != other.status_code {
+            return false;
+        }
+
+        // Try to convert the response bodies to JSON.
+        // Is successful, compare the two JSON object, otherwise compare them as strings
+        if let Ok(body1) = serde_json::from_str::<Value>(&self.body) {
+            if let Ok(body2) = serde_json::from_str::<Value>(&other.body) {
+                if body1 != body2 {
+                    return false;
+                }
+            }
+        } else if self.body != other.body {
+            return false;
+        }
+
+        if !headers_ignored {
+            if self.headers != other.headers {
+                return false;
+            }
+        }
+
+        true
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -57,6 +102,8 @@ async fn fetch_response(
     client: &Client,
     sempahore: &Semaphore,
 ) -> Result<HttpResponseData, Box<dyn std::error::Error + Send + Sync>> {
+    let _ = sempahore.acquire().await?;
+
     let request_builder = if body.is_null() {
         client.get(url)
     } else {
@@ -76,24 +123,9 @@ async fn fetch_response(
         )
         .collect();
 
-    let _ = sempahore.acquire().await?;
-
     let response = request_builder.headers(header_map).send().await?;
 
-    Ok(HttpResponseData {
-        status_code: response.status().as_u16(),
-        headers: response
-            .headers()
-            .iter()
-            .map(|(k, v)| {
-                (
-                    k.as_str().to_string(),
-                    v.to_str().unwrap_or_default().to_string(),
-                )
-            })
-            .collect(),
-        body: response.text().await?,
-    })
+    Ok(HttpResponseData::from_response(response).await?)
 }
 
 // Find previous response for a request ID, if it exists
@@ -130,36 +162,6 @@ async fn find_previous_response(
         }
         None => Ok(None),
     }
-}
-
-fn are_responses_equal(
-    response1: &HttpResponseData,
-    response2: &HttpResponseData,
-    headers_ignored: bool,
-) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
-    if response1.status_code != response2.status_code {
-        return Ok(false);
-    }
-
-    // Try to convert the response bodies to JSON.
-    // Is successful, compare the two JSON object, otherwise compare them as strings
-    if let Ok(body1) = serde_json::from_str::<Value>(&response1.body) {
-        if let Ok(body2) = serde_json::from_str::<Value>(&response2.body) {
-            if body1 != body2 {
-                return Ok(false);
-            }
-        }
-    } else if response1.body != response2.body {
-        return Ok(false);
-    }
-
-    if !headers_ignored {
-        if response1.headers != response2.headers {
-            return Ok(false);
-        }
-    }
-
-    Ok(true)
 }
 
 fn print_differences(
@@ -402,7 +404,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let client = Arc::from(
         reqwest::ClientBuilder::new()
-            .timeout(Duration::from_secs(5))
+            .connect_timeout(Duration::from_secs(10))
+            .timeout(Duration::from_secs(10))
             .build()?,
     );
 
@@ -444,7 +447,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     if !exists {
                         let mut url_to_semaphore = url_to_semaphore.write().await;
                         url_to_semaphore
-                            .insert(request_config.url.clone(), Arc::new(Semaphore::new(200)));
+                            .insert(request_config.url.clone(), Arc::new(Semaphore::new(5)));
                     }
 
                     let semaphore: Arc<Semaphore>;
@@ -475,11 +478,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                         )
                         .await?
                         {
-                            if !are_responses_equal(
-                                &prev_response,
-                                &current_response,
-                                headers_ignored,
-                            )? {
+                            if prev_response.is_equal_to(&current_response, headers_ignored) {
                                 print_differences(
                                     &request_config.id,
                                     &request_config.url,
@@ -511,7 +510,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             // Collect results from intermediate operations
             let mut writes: Vec<RequestResponse> = Vec::new();
             while let Some(result) = request_tasks.join_next().await {
-                writes.push(result??);
+                match result? {
+                    Ok(result) => writes.push(result),
+                    Err(e) => eprintln!("{}", e),
+                };
             }
 
             Ok::<Vec<RequestResponse>, Box<dyn std::error::Error + Send + Sync>>(writes)
@@ -521,7 +523,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Collect results from intermediate operations
     let mut writes: Vec<RequestResponse> = Vec::new();
     while let Some(result) = file_tasks.join_next().await {
-        writes.extend(result??);
+        match result? {
+            Ok(result) => writes.extend(result),
+            Err(e) => eprintln!("{}", e),
+        };
     }
 
     let query_str: String;
