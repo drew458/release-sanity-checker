@@ -1,4 +1,5 @@
 use colored::*;
+use log::debug;
 use reqwest::{Client, Response};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -294,6 +295,12 @@ fn print_differences(
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    const MAX_CONCURRENT_FILES: usize = 5;  // Max concurrent config files to process
+    const MAX_CONCURRENT_REQUESTS: usize = 50;  // Max concurrent HTTP requests overall
+    const REQUESTS_PER_HOST: usize = 20;  // Max concurrent requests per host
+    
+    env_logger::init();
+
     let args: Vec<String> = env::args().collect();
     let program_name = args[0].clone();
 
@@ -402,12 +409,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     .execute(db.as_ref())
     .await;
 
-    let client = Arc::from(
-        reqwest::ClientBuilder::new()
-            .connect_timeout(Duration::from_secs(10))
-            .timeout(Duration::from_secs(10))
-            .build()?,
-    );
+    let global_semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_REQUESTS));
+
+    let http_client = reqwest::ClientBuilder::new()
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(10))
+        .pool_max_idle_per_host(REQUESTS_PER_HOST)
+        .tcp_keepalive(Duration::from_secs(60))
+        .build()?;
 
     let url_to_semaphore: Arc<RwLock<HashMap<String, Arc<Semaphore>>>> =
         Arc::new(RwLock::new(HashMap::new()));
@@ -416,8 +425,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     for config_path in config_paths {
         let db = db.clone();
-        let client = client.clone();
+        let http_client = http_client.clone();
         let url_to_semaphore = url_to_semaphore.clone();
+        let global_semaphore = global_semaphore.clone();
 
         // Process config files concurrently
         file_tasks.spawn(async move {
@@ -428,44 +438,42 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             // Process requests inside config file concurrently
             for request_config in config.requests {
                 let db = db.clone();
-                let client = client.clone();
+                let http_client = http_client.clone();
                 let url_to_semaphore = url_to_semaphore.clone();
+                let global_semaphore = global_semaphore.clone();
 
                 request_tasks.spawn(async move {
-                    println!(
+                    let _global_permit = global_semaphore.acquire().await?;
+
+                    debug!(
                         "Checking request '{}' of URL '{}'",
                         request_config.id, request_config.url
                     );
 
-                    let mut exists = true;
-                    {
-                        if let None = url_to_semaphore.read().await.get(&request_config.url) {
-                            exists = false;
-                        }
-                    }
-
-                    if !exists {
+                    let semaphore = {
                         let mut url_to_semaphore = url_to_semaphore.write().await;
                         url_to_semaphore
-                            .insert(request_config.url.clone(), Arc::new(Semaphore::new(5)));
-                    }
+                            .entry(request_config.url.clone())
+                            .or_insert_with(|| Arc::new(Semaphore::new(REQUESTS_PER_HOST)))
+                            .clone()
+                    };
 
-                    let semaphore: Arc<Semaphore>;
-                    {
-                        let binding = url_to_semaphore.read().await;
-                        semaphore = binding.get(&request_config.url).cloned().expect(
-                            format!("Semaphore not found for URL {}", request_config.url).as_str(),
-                        );
-                    }
-
+                    debug!(
+                        "Sending request {} to {} for request",
+                        request_config.id, request_config.url
+                    );
                     let current_response = fetch_response(
                         &request_config.url,
                         &request_config.headers,
                         &request_config.body,
-                        &client,
+                        &http_client,
                         &semaphore,
                     )
                     .await?;
+                    debug!(
+                        "Request {} to {} done",
+                        request_config.id, request_config.url
+                    );
 
                     if !baseline_mode {
                         // Try to find a previous response for that request (identified by id and URL).
