@@ -19,7 +19,7 @@ use tokio::{
     task::JoinSet,
 };
 
-#[derive(Serialize, Deserialize, PartialEq, Debug)]
+#[derive(Serialize, Deserialize, PartialEq, Debug, Default)]
 struct HttpResponseData {
     status_code: u16,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
@@ -103,8 +103,6 @@ async fn fetch_response(
     client: &Client,
     sempahore: &Semaphore,
 ) -> Result<HttpResponseData, Box<dyn std::error::Error + Send + Sync>> {
-    let _ = sempahore.acquire().await?;
-
     let request_builder = if body.is_null() {
         client.get(url)
     } else {
@@ -124,6 +122,7 @@ async fn fetch_response(
         )
         .collect();
 
+    let _permit = sempahore.acquire().await?;
     let response = request_builder.headers(header_map).send().await?;
 
     Ok(HttpResponseData::from_response(response).await?)
@@ -295,8 +294,7 @@ fn print_differences(
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    const MAX_CONCURRENT_FILES: usize = 5;  // Max concurrent config files to process
-    const MAX_CONCURRENT_REQUESTS: usize = 50;  // Max concurrent HTTP requests overall
+    const MAX_CONCURRENT_REQUESTS: usize = 200;  // Max concurrent HTTP requests overall
     const REQUESTS_PER_HOST: usize = 20;  // Max concurrent requests per host
     
     env_logger::init();
@@ -409,8 +407,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     .execute(db.as_ref())
     .await;
 
-    let global_semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_REQUESTS));
-
     let http_client = reqwest::ClientBuilder::new()
         .connect_timeout(Duration::from_secs(10))
         .timeout(Duration::from_secs(10))
@@ -418,8 +414,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .tcp_keepalive(Duration::from_secs(60))
         .build()?;
 
-    let url_to_semaphore: Arc<RwLock<HashMap<String, Arc<Semaphore>>>> =
-        Arc::new(RwLock::new(HashMap::new()));
+    //let global_semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_REQUESTS));
+    let url_to_semaphore = Arc::new(RwLock::new(HashMap::new()));
 
     let mut file_tasks = JoinSet::new();
 
@@ -427,7 +423,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let db = db.clone();
         let http_client = http_client.clone();
         let url_to_semaphore = url_to_semaphore.clone();
-        let global_semaphore = global_semaphore.clone();
+        //let global_semaphore = global_semaphore.clone();
 
         // Process config files concurrently
         file_tasks.spawn(async move {
@@ -440,10 +436,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 let db = db.clone();
                 let http_client = http_client.clone();
                 let url_to_semaphore = url_to_semaphore.clone();
-                let global_semaphore = global_semaphore.clone();
+                //let global_semaphore = global_semaphore.clone();
 
                 request_tasks.spawn(async move {
-                    let _global_permit = global_semaphore.acquire().await?;
+                    //let _global_permit = global_semaphore.acquire().await?;
 
                     debug!(
                         "Checking request '{}' of URL '{}'",
@@ -458,22 +454,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                             .clone()
                     };
 
-                    debug!(
-                        "Sending request {} to {} for request",
-                        request_config.id, request_config.url
-                    );
-                    let current_response = fetch_response(
-                        &request_config.url,
-                        &request_config.headers,
-                        &request_config.body,
-                        &http_client,
-                        &semaphore,
-                    )
-                    .await?;
-                    debug!(
-                        "Request {} to {} done",
-                        request_config.id, request_config.url
-                    );
+                    let mut retries: i8 = 3;
+                    let mut current_response = HttpResponseData::default();
+                    while retries > 0 {
+                        debug!(
+                            "Sending request {} to {}",
+                            request_config.id, request_config.url
+                        );
+                        current_response = fetch_response(
+                            &request_config.url,
+                            &request_config.headers,
+                            &request_config.body,
+                            &http_client,
+                            &semaphore,
+                        )
+                        .await?;
+                        debug!(
+                            "Request {} to {} done",
+                            request_config.id, request_config.url
+                        );
+
+                        if current_response.status_code >= 500 {
+                            retries -= 1;
+                        } else {
+                            break;
+                        }
+                    }
 
                     if !baseline_mode {
                         // Try to find a previous response for that request (identified by id and URL).
