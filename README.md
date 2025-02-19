@@ -33,7 +33,8 @@ release-sanity-checker [options] <config_path>
     --directory <dir_path>: Run with all config files found in the directory.
     --ignore-headers: Do not look for changes in response headers.
     --baseline: Build the baseline for the requests. This will overwrite existing responses in the database with the current responses.
-    --help: Display this help message.
+    --changes-only: Print only the changed responses.
+    --verbose: Print the full response body/header when changed.
 
 ### Examples
 
