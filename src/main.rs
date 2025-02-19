@@ -62,10 +62,8 @@ impl HttpResponseData {
             return false;
         }
 
-        if !headers_ignored {
-            if self.headers != other.headers {
-                return false;
-            }
+        if !headers_ignored && self.headers != other.headers {
+            return false;
         }
 
         true
@@ -97,8 +95,17 @@ struct RequestFlowConfig {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
-struct Config {
+struct SanityCheckConfig {
     requests: Vec<RequestFlowConfig>,
+}
+
+#[derive(Default)]
+struct CmdConfig {
+    config_paths: Vec<PathBuf>,
+    headers_ignored: bool,
+    baseline_mode: bool,
+    changes_only: bool,
+    verbose: bool,
 }
 
 async fn fetch_response(
@@ -328,19 +335,14 @@ fn print_differences(
     );
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    //const MAX_CONCURRENT_REQUESTS: usize = 200;  // Max concurrent HTTP requests overall
-    const REQUESTS_PER_HOST: usize = 20; // Max concurrent requests per host
-
-    env_logger::init();
-
-    let args: Vec<String> = env::args().collect();
+async fn process_args(
+    args: Vec<String>,
+) -> Result<CmdConfig, Box<dyn std::error::Error + Send + Sync>> {
     let program_name = args[0].clone();
 
     if args.len() > 1 && args[1] == "--help" {
         print_usage(&program_name);
-        return Ok(());
+        process::exit(0);
     }
 
     let mut config_paths: Vec<PathBuf> = Vec::new();
@@ -420,6 +422,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         process::exit(1);
     }
 
+    Ok(CmdConfig {
+        config_paths,
+        headers_ignored,
+        baseline_mode,
+        changes_only,
+        verbose,
+    })
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    //const MAX_CONCURRENT_REQUESTS: usize = 200;  // Max concurrent HTTP requests overall
+    const REQUESTS_PER_HOST: usize = 20; // Max concurrent requests per host
+
+    env_logger::init();
+
+    let args: Vec<String> = env::args().collect();
+    let cmd_config = process_args(args).await?;
+
     let db = Arc::new(
         SqlitePool::connect_with(
             SqliteConnectOptions::from_str("sqlite://release-sanity-checker-data.db")?
@@ -459,8 +480,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let mut tasks = JoinSet::new();
 
-    for config_path in config_paths {
-        let config: Config = serde_json::from_str(&fs::read_to_string(&config_path).await?)?;
+    for config_path in cmd_config.config_paths {
+        let config: SanityCheckConfig =
+            serde_json::from_str(&fs::read_to_string(&config_path).await?)?;
 
         // Process requests inside config file concurrently
         for request_config in config.requests {
@@ -480,7 +502,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
                     let mut semaphore_exists_for_url = true;
                     {
-                        if let None = url_to_semaphore.read().await.get(&flow.url) {
+                        if url_to_semaphore.read().await.get(&flow.url).is_none() {
                             semaphore_exists_for_url = false;
                         }
                     }
@@ -502,10 +524,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     let mut retries: i8 = 3;
                     let mut current_response = HttpResponseData::default();
                     while retries > 0 {
-                        debug!(
-                            "Sending request {} to {}",
-                            request_config.id, flow.url
-                        );
+                        debug!("Sending request {} to {}", request_config.id, flow.url);
                         current_response = fetch_response(
                             &flow.url,
                             &flow.headers,
@@ -514,10 +533,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                             &semaphore,
                         )
                         .await?;
-                        debug!(
-                            "Request {} to {} done",
-                            request_config.id, flow.url
-                        );
+                        debug!("Request {} to {} done", request_config.id, flow.url);
 
                         if current_response.status_code >= 500 {
                             retries -= 1;
@@ -526,33 +542,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                         }
                     }
 
-                    if !baseline_mode {
+                    if !cmd_config.baseline_mode {
                         // Try to find a previous response for that request (identified by id and URL).
                         // If it's found, check the differences
                         if let Some(prev_response) = find_previous_response(
                             &request_config.id,
                             &flow.url,
-                            headers_ignored,
+                            cmd_config.headers_ignored,
                             db.as_ref(),
                         )
                         .await?
                         {
-                            if !prev_response.is_equal_to(&current_response, headers_ignored) {
+                            if !prev_response
+                                .is_equal_to(&current_response, cmd_config.headers_ignored)
+                            {
                                 print_differences(
                                     &request_config.id,
                                     &flow.url,
                                     &prev_response,
                                     &current_response,
-                                    headers_ignored,
-                                    verbose,
+                                    cmd_config.headers_ignored,
+                                    cmd_config.verbose,
                                 );
-                            } else {
-                                if !changes_only {
-                                    println!(
-                                        "\n✅ Request '{}' of URL '{}' has not changed. ✅",
-                                        request_config.id, flow.url
-                                    );
-                                }
+                            } else if !cmd_config.changes_only {
+                                println!(
+                                    "\n✅ Request '{}' of URL '{}' has not changed. ✅",
+                                    request_config.id, flow.url
+                                );
                             }
                         }
                     }
@@ -582,23 +598,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         };
     }
 
-    let query_str: String;
-
-    if baseline_mode {
-        query_str =
-            "INSERT INTO response (request_id, url, baseline_status_code, baseline_body, baseline_headers)
+    let query_str = if cmd_config.baseline_mode {
+        "INSERT INTO response (request_id, url, baseline_status_code, baseline_body, baseline_headers)
             VALUES (?, ?, ?, ?, ?)
             ON CONFLICT (request_id, url) DO UPDATE SET baseline_status_code = excluded.baseline_status_code,
                     baseline_body = excluded.baseline_body,
-                    baseline_headers = excluded.baseline_headers".to_string();
+                    baseline_headers = excluded.baseline_headers".to_string()
     } else {
-        query_str =
-            "INSERT INTO response (request_id, url, checktime_status_code, checktime_body, checktime_headers)
+        "INSERT INTO response (request_id, url, checktime_status_code, checktime_body, checktime_headers)
             VALUES (?, ?, ?, ?, ?)
             ON CONFLICT (request_id, url) DO UPDATE SET checktime_status_code = excluded.checktime_status_code,
                     checktime_body = excluded.checktime_body,
-                    checktime_headers = excluded.checktime_headers".to_string();
-    }
+                    checktime_headers = excluded.checktime_headers".to_string()
+    };
 
     // Perform all database writes in a single transaction
     {
@@ -616,7 +628,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         tx.commit().await?;
     }
 
-    if baseline_mode {
+    if cmd_config.baseline_mode {
         println!("\nBaseline built successfully.");
     } else {
         println!("\nResponse check completed.");

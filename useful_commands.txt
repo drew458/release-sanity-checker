@@ -1,0 +1,3 @@
+RUST_LOG=debug ./target/debug/release-sanity-checker --baseline /Users/u465317/dev/other/notebook-workbench/output.json
+
+./target/debug/release-sanity-checker --ignore-headers --changes-only --verbose /Users/u465317/dev/other/notebook-workbench/output.json > app.log 2>&1
