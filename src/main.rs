@@ -51,7 +51,7 @@ impl HttpResponseData {
         }
 
         // Try to convert the response bodies to JSON.
-        // Is successful, compare the two JSON object, otherwise compare them as strings
+        // If successful, compare the two JSON object, otherwise compare body as strings
         if let Ok(body1) = serde_json::from_str::<Value>(&self.body) {
             if let Ok(body2) = serde_json::from_str::<Value>(&other.body) {
                 if body1 != body2 {
@@ -294,7 +294,7 @@ fn print_differences(
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    const MAX_CONCURRENT_REQUESTS: usize = 200;  // Max concurrent HTTP requests overall
+    //const MAX_CONCURRENT_REQUESTS: usize = 200;  // Max concurrent HTTP requests overall
     const REQUESTS_PER_HOST: usize = 20;  // Max concurrent requests per host
     
     env_logger::init();
@@ -446,13 +446,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                         request_config.id, request_config.url
                     );
 
-                    let semaphore = {
+                    let mut semaphore_exists_for_url = true;
+                    {
+                        if let None = url_to_semaphore.read().await.get(&request_config.url) {
+                            semaphore_exists_for_url = false;
+                        }
+                    }
+
+                    if !semaphore_exists_for_url {
                         let mut url_to_semaphore = url_to_semaphore.write().await;
                         url_to_semaphore
-                            .entry(request_config.url.clone())
-                            .or_insert_with(|| Arc::new(Semaphore::new(REQUESTS_PER_HOST)))
-                            .clone()
-                    };
+                            .insert(request_config.url.clone(), Arc::new(Semaphore::new(REQUESTS_PER_HOST)));
+                    }
+
+                    let semaphore: Arc<Semaphore>;
+                    {
+                        let binding = url_to_semaphore.read().await;
+                        semaphore = binding.get(&request_config.url).cloned().unwrap();
+                    }
 
                     let mut retries: i8 = 3;
                     let mut current_response = HttpResponseData::default();
