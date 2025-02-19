@@ -72,7 +72,7 @@ impl HttpResponseData {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Default)]
 struct RequestResponse {
     request_id: String,
     url: String,
@@ -83,7 +83,6 @@ struct RequestResponse {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 struct RequestConfig {
-    id: String,
     url: String,
     #[serde(default)]
     headers: HashMap<String, String>,
@@ -92,8 +91,14 @@ struct RequestConfig {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
+struct RequestFlowConfig {
+    id: String,
+    flow: Vec<RequestConfig>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
 struct Config {
-    requests: Vec<RequestConfig>,
+    requests: Vec<RequestFlowConfig>,
 }
 
 async fn fetch_response(
@@ -476,99 +481,103 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 request_tasks.spawn(async move {
                     //let _global_permit = global_semaphore.acquire().await?;
 
-                    debug!(
-                        "Checking request '{}' of URL '{}'",
-                        request_config.id, request_config.url
-                    );
+                    debug!("Checking request '{}'", request_config.id);
 
-                    let mut semaphore_exists_for_url = true;
-                    {
-                        if let None = url_to_semaphore.read().await.get(&request_config.url) {
-                            semaphore_exists_for_url = false;
-                        }
-                    }
+                    let mut response = RequestResponse::default();
+                    for i in 0..request_config.flow.len() {
+                        let flow = request_config.flow.get(i).unwrap();
 
-                    if !semaphore_exists_for_url {
-                        let mut url_to_semaphore = url_to_semaphore.write().await;
-                        url_to_semaphore.insert(
-                            request_config.url.clone(),
-                            Arc::new(Semaphore::new(REQUESTS_PER_HOST)),
-                        );
-                    }
-
-                    let semaphore: Arc<Semaphore>;
-                    {
-                        let binding = url_to_semaphore.read().await;
-                        semaphore = binding.get(&request_config.url).cloned().unwrap();
-                    }
-
-                    let mut retries: i8 = 3;
-                    let mut current_response = HttpResponseData::default();
-                    while retries > 0 {
-                        debug!(
-                            "Sending request {} to {}",
-                            request_config.id, request_config.url
-                        );
-                        current_response = fetch_response(
-                            &request_config.url,
-                            &request_config.headers,
-                            &request_config.body,
-                            &http_client,
-                            &semaphore,
-                        )
-                        .await?;
-                        debug!(
-                            "Request {} to {} done",
-                            request_config.id, request_config.url
-                        );
-
-                        if current_response.status_code >= 500 {
-                            retries -= 1;
-                        } else {
-                            break;
-                        }
-                    }
-
-                    if !baseline_mode {
-                        // Try to find a previous response for that request (identified by id and URL).
-                        // If it's found, check the differences
-                        if let Some(prev_response) = find_previous_response(
-                            &request_config.id,
-                            &request_config.url,
-                            headers_ignored,
-                            db.as_ref(),
-                        )
-                        .await?
+                        let mut semaphore_exists_for_url = true;
                         {
-                            if !prev_response.is_equal_to(&current_response, headers_ignored) {
-                                print_differences(
-                                    &request_config.id,
-                                    &request_config.url,
-                                    &prev_response,
-                                    &current_response,
-                                    headers_ignored,
-                                    verbose,
-                                );
+                            if let None = url_to_semaphore.read().await.get(&flow.url) {
+                                semaphore_exists_for_url = false;
+                            }
+                        }
+
+                        if !semaphore_exists_for_url {
+                            let mut url_to_semaphore = url_to_semaphore.write().await;
+                            url_to_semaphore.insert(
+                                flow.url.clone(),
+                                Arc::new(Semaphore::new(REQUESTS_PER_HOST)),
+                            );
+                        }
+
+                        let semaphore: Arc<Semaphore>;
+                        {
+                            let binding = url_to_semaphore.read().await;
+                            semaphore = binding.get(&flow.url).cloned().unwrap();
+                        }
+
+                        let mut retries: i8 = 3;
+                        let mut current_response = HttpResponseData::default();
+                        while retries > 0 {
+                            debug!(
+                                "Sending request {} to {}",
+                                request_config.id, flow.url
+                            );
+                            current_response = fetch_response(
+                                &flow.url,
+                                &flow.headers,
+                                &flow.body,
+                                &http_client,
+                                &semaphore,
+                            )
+                            .await?;
+                            debug!(
+                                "Request {} to {} done",
+                                request_config.id, flow.url
+                            );
+
+                            if current_response.status_code >= 500 {
+                                retries -= 1;
                             } else {
-                                if !changes_only {
-                                    println!(
-                                        "\n✅ Request '{}' of URL '{}' has not changed. ✅",
-                                        request_config.id, request_config.url
+                                break;
+                            }
+                        }
+
+                        if !baseline_mode {
+                            // Try to find a previous response for that request (identified by id and URL).
+                            // If it's found, check the differences
+                            if let Some(prev_response) = find_previous_response(
+                                &request_config.id,
+                                &flow.url,
+                                headers_ignored,
+                                db.as_ref(),
+                            )
+                            .await?
+                            {
+                                if !prev_response.is_equal_to(&current_response, headers_ignored) {
+                                    print_differences(
+                                        &request_config.id,
+                                        &flow.url,
+                                        &prev_response,
+                                        &current_response,
+                                        headers_ignored,
+                                        verbose,
                                     );
+                                } else {
+                                    if !changes_only {
+                                        println!(
+                                            "\n✅ Request '{}' of URL '{}' has not changed. ✅",
+                                            request_config.id, flow.url
+                                        );
+                                    }
                                 }
                             }
                         }
+
+                        if i == request_config.flow.len() - 1 {
+                            response = RequestResponse {
+                                request_id: request_config.id.clone(),
+                                url: flow.url.clone(),
+                                status_code: current_response.status_code,
+                                headers: serde_json::to_string(&current_response.headers)?,
+                                body: current_response.body,
+                            }
+                        };
                     }
 
-                    let res = RequestResponse {
-                        request_id: request_config.id,
-                        url: request_config.url,
-                        status_code: current_response.status_code,
-                        headers: serde_json::to_string(&current_response.headers)?,
-                        body: current_response.body,
-                    };
-
-                    Ok::<RequestResponse, Box<dyn std::error::Error + Send + Sync>>(res)
+                    Ok::<RequestResponse, Box<dyn std::error::Error + Send + Sync>>(response)
                 });
             }
 
@@ -645,7 +654,7 @@ fn print_usage(program_name: &str) {
     println!("  --directory <dir_path>        Run with all config files found in the directory.");
     println!("  --ignore-headers              Do not look for changes in response headers.");
     println!("  --baseline                    Build the baseline for the requests.");
-    println!("  --changes-only                Print only the changed responses");
+    println!("  --changes-only                Print only the changed responses.");
     println!("  --verbose                     Print the full response body/header when changed.");
     println!();
     println!("Examples:");

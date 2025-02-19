@@ -2,19 +2,58 @@
     "requests": [
         {
             "id": "1",
-            "url": "https://api.restful-api.dev/objects",
-            "headers": {
-                "Content-Type": "application/json"
-            },
-            "body": {
-                "name": "Apple MacBook Pro 16",
-                "data": {
-                    "year": 2019,
-                    "price": 1849.99,
-                    "CPU model": "Intel Core i9",
-                    "Hard disk size": "1 TB"
+            "flow": [
+                {
+                    "url": "https://api.restful-api.dev/objects",
+                    "headers": {
+                        "Content-Type": "application/json"
+                    },
+                    "body": {
+                        "name": "Apple MacBook Pro 16",
+                        "data": {
+                            "year": 2019,
+                            "price": 1849.99,
+                            "CPU model": "Intel Core i9",
+                            "Hard disk size": "1 TB"
+                        }
+                    }
+                },
+                {
+                    "url": "https://api.restful-api.dev/objects",
+                    "headers": {
+                        "Content-Type": "application/json"
+                    },
+                    "body": {
+                        "name": "Apple MacBook Pro 16",
+                        "data": {
+                            "year": 2019,
+                            "price": 1849.99,
+                            "CPU model": "Intel Core i9",
+                            "Hard disk size": "1 TB"
+                        }
+                    }
                 }
-            }
+            ]
+        },
+        {
+            "id": "2",
+            "flow": [
+                {
+                    "url": "https://api.restful-api.dev/objects",
+                    "headers": {
+                        "Content-Type": "application/json"
+                    },
+                    "body": {
+                        "name": "Apple MacBook Pro 16",
+                        "data": {
+                            "year": 2019,
+                            "price": 1849.99,
+                            "CPU model": "Intel Core i9",
+                            "Hard disk size": "1 TB"
+                        }
+                    }
+                }
+            ]
         }
     ]
 }
