@@ -503,7 +503,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                         )
                         .await?
                         {
-                            if prev_response.is_equal_to(&current_response, headers_ignored) {
+                            if !prev_response.is_equal_to(&current_response, headers_ignored) {
                                 print_differences(
                                     &request_config.id,
                                     &request_config.url,
