@@ -170,6 +170,7 @@ fn print_differences(
     response1: &HttpResponseData,
     response2: &HttpResponseData,
     headers_ignored: bool,
+    verbose: bool,
 ) {
     println!(
         "\n❌-----------------------------------------------------------------------------------------❌"
@@ -177,7 +178,7 @@ fn print_differences(
     println!(
         "{}",
         format!(
-            "Differences detected for request: '{}' of URL '{}'",
+            "Differences detected for request '{}' of URL '{}'",
             request_id, url
         )
         .yellow()
@@ -201,37 +202,49 @@ fn print_differences(
         for (key, value1) in headers1.iter() {
             if let Some(value2) = headers2.get(key) {
                 if value1 != value2 {
-                    let min_len = std::cmp::min(value1.len(), value2.len());
-
                     println!("    Changed Header: {}", key);
-                    println!(
-                        "      Before (preview): {}",
-                        value1
-                            .chars()
-                            .take(min_len.min(diff_preview_len))
-                            .collect::<String>()
-                            .green()
-                    );
-                    println!(
-                        "      After (preview):  {}",
-                        value2
-                            .chars()
-                            .take(min_len.min(diff_preview_len))
-                            .collect::<String>()
-                            .red()
-                    );
+
+                    if verbose {
+                        println!("      Before: {}", value1.green());
+                        println!("      After:  {}", value2.red());
+                    } else {
+                        let min_len = std::cmp::min(value1.len(), value2.len());
+                        println!(
+                            "      Before (preview): {}",
+                            value1
+                                .chars()
+                                .take(min_len.min(diff_preview_len))
+                                .collect::<String>()
+                                .green()
+                        );
+                        println!(
+                            "      After  (preview):  {}",
+                            value2
+                                .chars()
+                                .take(min_len.min(diff_preview_len))
+                                .collect::<String>()
+                                .red()
+                        );
+                    }
+
                     header_differences = true;
                 }
             } else {
                 println!("    Removed Header: {}", key);
-                println!(
-                    "      Value (preview): {}",
-                    value1
-                        .chars()
-                        .take(value1.len().min(diff_preview_len))
-                        .collect::<String>()
-                        .red()
-                );
+
+                if verbose {
+                    println!("      Value: {}", value1.red());
+                } else {
+                    println!(
+                        "      Value (preview): {}",
+                        value1
+                            .chars()
+                            .take(value1.len().min(diff_preview_len))
+                            .collect::<String>()
+                            .red()
+                    );
+                }
+
                 header_differences = true;
             }
         }
@@ -239,7 +252,20 @@ fn print_differences(
         for (key, value2) in headers2.iter() {
             if !headers1.contains_key(key) {
                 println!("    Added Header: {}", key);
-                println!("      Value (preview): {}", value2.red());
+
+                if verbose {
+                    println!("      Value: {}", value2.red());
+                } else {
+                    println!(
+                        "      Value (preview): {}",
+                        value2
+                            .chars()
+                            .take(value2.len().min(diff_preview_len))
+                            .collect::<String>()
+                            .red()
+                    );
+                }
+
                 header_differences = true;
             }
         }
@@ -257,24 +283,29 @@ fn print_differences(
         let len2 = response2.body.len();
         let min_len = std::cmp::min(len1, len2);
 
-        println!(
-            "    Before (preview): {}",
-            response1
-                .body
-                .chars()
-                .take(min_len.min(diff_preview_len))
-                .collect::<String>()
-                .green()
-        );
-        println!(
-            "    After  (preview): {}",
-            response2
-                .body
-                .chars()
-                .take(min_len.min(diff_preview_len))
-                .collect::<String>()
-                .red()
-        );
+        if verbose {
+            println!("    Before: {}", response1.body);
+            println!("    After:  {}", response2.body);
+        } else {
+            println!(
+                "    Before (preview): {}",
+                response1
+                    .body
+                    .chars()
+                    .take(min_len.min(diff_preview_len))
+                    .collect::<String>()
+                    .green()
+            );
+            println!(
+                "    After  (preview): {}",
+                response2
+                    .body
+                    .chars()
+                    .take(min_len.min(diff_preview_len))
+                    .collect::<String>()
+                    .red()
+            );
+        }
 
         if len1 != len2 {
             println!(
@@ -295,8 +326,8 @@ fn print_differences(
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     //const MAX_CONCURRENT_REQUESTS: usize = 200;  // Max concurrent HTTP requests overall
-    const REQUESTS_PER_HOST: usize = 20;  // Max concurrent requests per host
-    
+    const REQUESTS_PER_HOST: usize = 20; // Max concurrent requests per host
+
     env_logger::init();
 
     let args: Vec<String> = env::args().collect();
@@ -311,6 +342,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut mode_file = true; // Default mode is --file
     let mut headers_ignored = false;
     let mut baseline_mode = false;
+    let mut changes_only = false;
+    let mut verbose = false;
 
     let mut arg_iter = args.iter().skip(1);
 
@@ -363,6 +396,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             "--baseline" => {
                 baseline_mode = true;
             }
+            "--changes-only" => changes_only = true,
+            "--verbose" => verbose = true,
             config_path if mode_file => {
                 // Default to file mode if no flag and it's the first non-flag arg
                 config_paths.push(PathBuf::from(config_path));
@@ -455,8 +490,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
                     if !semaphore_exists_for_url {
                         let mut url_to_semaphore = url_to_semaphore.write().await;
-                        url_to_semaphore
-                            .insert(request_config.url.clone(), Arc::new(Semaphore::new(REQUESTS_PER_HOST)));
+                        url_to_semaphore.insert(
+                            request_config.url.clone(),
+                            Arc::new(Semaphore::new(REQUESTS_PER_HOST)),
+                        );
                     }
 
                     let semaphore: Arc<Semaphore>;
@@ -510,12 +547,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                     &prev_response,
                                     &current_response,
                                     headers_ignored,
+                                    verbose,
                                 );
                             } else {
-                                println!(
-                                    "\n✅ Request '{}' of URL '{}' has not changed. ✅",
-                                    request_config.id, request_config.url
-                                );
+                                if !changes_only {
+                                    println!(
+                                        "\n✅ Request '{}' of URL '{}' has not changed. ✅",
+                                        request_config.id, request_config.url
+                                    );
+                                }
                             }
                         }
                     }
@@ -605,6 +645,8 @@ fn print_usage(program_name: &str) {
     println!("  --directory <dir_path>        Run with all config files found in the directory.");
     println!("  --ignore-headers              Do not look for changes in response headers.");
     println!("  --baseline                    Build the baseline for the requests.");
+    println!("  --changes-only                Print only the changed responses");
+    println!("  --verbose                     Print the full response body/header when changed.");
     println!();
     println!("Examples:");
     println!(
