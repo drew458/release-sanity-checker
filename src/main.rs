@@ -384,6 +384,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     //let global_semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_REQUESTS));
     let url_to_semaphore = Arc::new(RwLock::new(HashMap::new()));
+    let print_mutex = Arc::new(tokio::sync::Mutex::new(()));
 
     let mut tasks = JoinSet::new();
 
@@ -397,6 +398,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             let http_client = http_client.clone();
             let url_to_semaphore = url_to_semaphore.clone();
             //let global_semaphore = global_semaphore.clone();
+            let print_mutex = print_mutex.clone();
 
             tasks.spawn(async move {
                 //let _global_permit = global_semaphore.acquire().await?;
@@ -466,6 +468,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                     cmd_config.headers_ignored,
                                     request_config.ignore_paths.as_ref(),
                                 ) {
+                                    let _ = print_mutex.lock().await;
                                     print_differences(
                                         &request_config.id,
                                         &flow.url,
