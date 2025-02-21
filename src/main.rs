@@ -45,16 +45,61 @@ impl HttpResponseData {
         })
     }
 
-    fn is_equal_to(&self, other: &HttpResponseData, headers_ignored: bool) -> bool {
+    fn is_equal_to(
+        &self,
+        other: &HttpResponseData,
+        headers_ignored: bool,
+        ignored_paths: &Vec<String>,
+    ) -> bool {
         if self.status_code != other.status_code {
             return false;
         }
 
         // Try to convert the response bodies to JSON.
         // If successful, compare the two JSON object, otherwise compare body as strings
-        if let Ok(body1) = serde_json::from_str::<Value>(&self.body) {
-            if let Ok(body2) = serde_json::from_str::<Value>(&other.body) {
+        if let Ok(mut body1) = serde_json::from_str::<Value>(&self.body) {
+            if let Ok(mut body2) = serde_json::from_str::<Value>(&other.body) {
+                let mut body1_ignored_path_to_value = HashMap::new();
+                let mut body2_ignored_path_to_value = HashMap::new();
+
+                // Modify the values into the ignored paths for making the comparison equal
+                for ignored_path in ignored_paths {
+                    if let Some(val1) = body1.pointer(ignored_path) {
+                        let val1 = val1.clone();
+                        body1_ignored_path_to_value.insert(ignored_path, val1);
+                        *body1.pointer_mut(ignored_path).unwrap() = "".into();
+                    }
+
+                    if let Some(val2) = body2.pointer(ignored_path) {
+                        let val2 = val2.clone();
+                        body2_ignored_path_to_value.insert(ignored_path, val2);
+                        *body2.pointer_mut(ignored_path).unwrap() = "".into();
+                    }
+                }
+
+                let mut body_equal = true;
                 if body1 != body2 {
+                    body_equal = false;
+                }
+
+                // Always set back the value to the previous one
+                for ignored_path in ignored_paths {
+                    if let Some(val1) = body1.pointer_mut(ignored_path) {
+                        *val1 = body1_ignored_path_to_value
+                            .get(ignored_path)
+                            .unwrap()
+                            .to_owned();
+                    }
+
+                    if let Some(val2) = body2.pointer_mut(ignored_path) {
+                        *val2 = body2_ignored_path_to_value
+                            .get(ignored_path)
+                            .unwrap()
+                            .to_owned();
+                    }
+                }
+
+                if !body_equal {
                     return false;
                 }
             }
@@ -92,6 +137,7 @@ struct RequestConfig {
 struct RequestFlowConfig {
     id: String,
     flow: Vec<RequestConfig>,
+    ignore_paths: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -434,7 +480,7 @@ async fn process_args(
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     //const MAX_CONCURRENT_REQUESTS: usize = 200;  // Max concurrent HTTP requests overall
-    const REQUESTS_PER_HOST: usize = 20; // Max concurrent requests per host
+    const REQUESTS_PER_HOST: usize = 30; // Max concurrent requests per host
 
     env_logger::init();
 
@@ -553,9 +599,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                         )
                         .await?
                         {
-                            if !prev_response
-                                .is_equal_to(&current_response, cmd_config.headers_ignored)
-                            {
+                            if !prev_response.is_equal_to(
+                                &current_response,
+                                cmd_config.headers_ignored,
+                                &request_config.ignore_paths,
+                            ) {
                                 print_differences(
                                     &request_config.id,
                                     &flow.url,
