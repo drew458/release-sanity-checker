@@ -33,7 +33,8 @@
                         }
                     }
                 }
-            ]
+            ],
+            "ignore_paths": ["/createdAt", "/id"]
         },
         {
             "id": "2",

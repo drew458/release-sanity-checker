@@ -1,11 +1,14 @@
-use colored::*;
+mod diff_printer;
+
+use diff_printer::print_differences;
+
 use log::debug;
-use reqwest::{Client, Response};
+use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sqlx::{sqlite::SqliteConnectOptions, Pool, Row, Sqlite, SqlitePool};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     env::{self},
     path::PathBuf,
     process,
@@ -19,12 +22,18 @@ use tokio::{
     task::JoinSet,
 };
 
+#[derive(Serialize, Deserialize, PartialEq, Debug, Default, Clone)]
+struct ParsedBody {
+    raw: String,
+    json: Option<Value>,
+}
+
 #[derive(Serialize, Deserialize, PartialEq, Debug, Default)]
 struct HttpResponseData {
     status_code: u16,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     headers: HashMap<String, String>,
-    body: String,
+    body: ParsedBody,
 }
 
 impl HttpResponseData {
@@ -32,7 +41,10 @@ impl HttpResponseData {
         HttpResponseData {
             status_code,
             headers,
-            body,
+            body: ParsedBody {
+                raw: body.clone(),
+                json: serde_json::from_str(&body).ok(),
+            },
         }
     }
 
@@ -40,67 +52,67 @@ impl HttpResponseData {
         &self,
         other: &HttpResponseData,
         headers_ignored: bool,
-        ignored_paths: &Vec<String>,
+        ignored_paths: Option<&HashSet<String>>,
     ) -> bool {
-        if self.status_code != other.status_code {
-            return false;
-        }
-
-        // Try to convert the response bodies to JSON.
-        // If successful, compare the two JSON object, otherwise compare body as strings
-        if let Ok(mut body1) = serde_json::from_str::<Value>(&self.body) {
-            if let Ok(mut body2) = serde_json::from_str::<Value>(&other.body) {
-                let mut body1_ignored_path_to_value = HashMap::new();
-                let mut body2_ignored_path_to_value = HashMap::new();
-
-                // Modify the values into the ignored paths for making the comparison equal
-                for ignored_path in ignored_paths {
-                    if let Some(val1) = body1.pointer(ignored_path) {
-                        let val1 = val1.clone();
-                        body1_ignored_path_to_value.insert(ignored_path, val1);
-                        *body1.pointer_mut(ignored_path).unwrap() = "".into();
-                    }
-
-                    if let Some(val2) = body2.pointer(ignored_path) {
-                        let val2 = val2.clone();
-                        body2_ignored_path_to_value.insert(ignored_path, val2);
-                        *body2.pointer_mut(ignored_path).unwrap() = "".into();
-                    }
+        /*
+        fn remove_ignored_fields(value: &mut Value, ignored_fields: &[String]) {
+            match value {
+                Value::Object(map) => {
+                    // Remove ignored fields at this level
+                    ignored_fields.iter().for_each(|field| {
+                        map.remove(field);
+                    });
+                    // Recursively process remaining fields
+                    map.values_mut().for_each(|v| {
+                        remove_ignored_fields(v, ignored_fields);
+                    });
                 }
-
-                let mut body_equal = true;
-                if body1 != body2 {
-                    body_equal = false;
+                Value::Array(arr) => {
+                    arr.iter_mut().for_each(|v| {
+                        remove_ignored_fields(v, ignored_fields);
+                    });
                 }
-
-                // Always set back the value to the previous one
-                for ignored_path in ignored_paths {
-                    if let Some(val1) = body1.pointer_mut(ignored_path) {
-                        *val1 = body1_ignored_path_to_value
-                            .get(ignored_path)
-                            .unwrap()
-                            .to_owned();
-                    }
-
-                    if let Some(val2) = body2.pointer_mut(ignored_path) {
-                        *val2 = body2_ignored_path_to_value
-                            .get(ignored_path)
-                            .unwrap()
-                            .to_owned();
-                    }
-                }
-
-                if !body_equal {
-                    return false;
-                }
+                _ => {}
             }
-        } else if self.body != other.body {
+        }
+        */
+
+        if self.status_code != other.status_code {
             return false;
         }
 
         if !headers_ignored && self.headers != other.headers {
             return false;
         }
+
+        let body1 = self.body.clone();
+        let body2 = other.body.clone();
+
+        // Try to convert the response bodies to JSON.
+        // If successful, compare the two JSON object, otherwise compare bodies as strings
+        match (body1.json, body2.json) {
+            (Some(mut body1), Some(mut body2)) => {
+                if let Some(ignored_paths) = ignored_paths {
+                    for path in ignored_paths {
+                        if let Some(val1) = body1.pointer_mut(path) {
+                            *val1 = Value::Null;
+                        }
+                        if let Some(val2) = body2.pointer_mut(path) {
+                            *val2 = Value::Null;
+                        }
+                    }
+                }
+
+                if body1 != body2 {
+                    return false;
+                }
+            }
+            _ => {
+                if self.body != other.body {
+                    return false;
+                }
+            }
+        };
 
         true
     }
@@ -128,7 +140,7 @@ struct RequestConfig {
 struct RequestFlowConfig {
     id: String,
     flow: Vec<RequestConfig>,
-    ignore_paths: Vec<String>,
+    ignore_paths: Option<HashSet<String>>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -190,7 +202,7 @@ async fn fetch_response(
     ))
 }
 
-// Find previous response for a request ID, if it exists
+/// Find previous response for a request ID, if it exists
 async fn find_previous_response(
     request_id: &str,
     url: &str,
@@ -216,173 +228,19 @@ async fn find_previous_response(
                 HashMap::new()
             };
 
+            let body: String = row.get("baseline_body");
+
             Ok(Some(HttpResponseData {
                 status_code: row.get("baseline_status_code"),
                 headers,
-                body: row.get("baseline_body"),
+                body: ParsedBody {
+                    raw: body.clone(),
+                    json: serde_json::from_str(&body).ok(),
+                },
             }))
         }
         None => Ok(None),
     }
-}
-
-fn print_differences(
-    request_id: &str,
-    url: &str,
-    response1: &HttpResponseData,
-    response2: &HttpResponseData,
-    headers_ignored: bool,
-    verbose: bool,
-) {
-    println!(
-        "\n❌-----------------------------------------------------------------------------------------❌"
-    );
-    println!(
-        "{}",
-        format!(
-            "Differences detected for request '{}' of URL '{}'",
-            request_id, url
-        )
-        .yellow()
-    );
-
-    if response1.status_code != response2.status_code {
-        println!("  Status Code Difference:");
-        println!("    Before: {}", response1.status_code.to_string().green());
-        println!("    After:  {}", response2.status_code.to_string().red());
-    }
-
-    let diff_preview_len = 200;
-
-    if !headers_ignored {
-        let headers1 = &response1.headers;
-        let headers2 = &response2.headers;
-
-        let mut header_differences = false;
-        println!("  Header Differences:");
-
-        for (key, value1) in headers1.iter() {
-            if let Some(value2) = headers2.get(key) {
-                if value1 != value2 {
-                    println!("    Changed Header: {}", key);
-
-                    if verbose {
-                        println!("      Before: {}", value1.green());
-                        println!("      After:  {}", value2.red());
-                    } else {
-                        let min_len = std::cmp::min(value1.len(), value2.len());
-                        println!(
-                            "      Before (preview): {}",
-                            value1
-                                .chars()
-                                .take(min_len.min(diff_preview_len))
-                                .collect::<String>()
-                                .green()
-                        );
-                        println!(
-                            "      After  (preview):  {}",
-                            value2
-                                .chars()
-                                .take(min_len.min(diff_preview_len))
-                                .collect::<String>()
-                                .red()
-                        );
-                    }
-
-                    header_differences = true;
-                }
-            } else {
-                println!("    Removed Header: {}", key);
-
-                if verbose {
-                    println!("      Value: {}", value1.red());
-                } else {
-                    println!(
-                        "      Value (preview): {}",
-                        value1
-                            .chars()
-                            .take(value1.len().min(diff_preview_len))
-                            .collect::<String>()
-                            .red()
-                    );
-                }
-
-                header_differences = true;
-            }
-        }
-
-        for (key, value2) in headers2.iter() {
-            if !headers1.contains_key(key) {
-                println!("    Added Header: {}", key);
-
-                if verbose {
-                    println!("      Value: {}", value2.red());
-                } else {
-                    println!(
-                        "      Value (preview): {}",
-                        value2
-                            .chars()
-                            .take(value2.len().min(diff_preview_len))
-                            .collect::<String>()
-                            .red()
-                    );
-                }
-
-                header_differences = true;
-            }
-        }
-
-        if !header_differences && !headers1.is_empty() && !headers2.is_empty() {
-            println!("    No header value changes detected.");
-        } else if headers1.is_empty() && headers2.is_empty() {
-            println!("    No headers to compare.");
-        }
-    }
-
-    if response1.body != response2.body {
-        println!("  Body Difference:");
-        let len1 = response1.body.len();
-        let len2 = response2.body.len();
-        let min_len = std::cmp::min(len1, len2);
-
-        if verbose {
-            println!("    Before: {}", response1.body);
-            println!("    After:  {}", response2.body);
-        } else {
-            println!(
-                "    Before (preview): {}",
-                response1
-                    .body
-                    .chars()
-                    .take(min_len.min(diff_preview_len))
-                    .collect::<String>()
-                    .green()
-            );
-            println!(
-                "    After  (preview): {}",
-                response2
-                    .body
-                    .chars()
-                    .take(min_len.min(diff_preview_len))
-                    .collect::<String>()
-                    .red()
-            );
-        }
-
-        if len1 != len2 {
-            println!(
-                "    Body length changed: Before: {}, After: {}",
-                len1.to_string().green(),
-                len2.to_string().red()
-            );
-        }
-    } else {
-        println!("  No Body Difference.");
-    }
-
-    println!(
-        "❌-----------------------------------------------------------------------------------------❌"
-    );
 }
 
 async fn process_args(
@@ -606,7 +464,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                             if !prev_response.is_equal_to(
                                 &current_response,
                                 cmd_config.headers_ignored,
-                                &request_config.ignore_paths,
+                                request_config.ignore_paths.as_ref(),
                             ) {
                                 print_differences(
                                     &request_config.id,
@@ -614,6 +472,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                     &prev_response,
                                     &current_response,
                                     cmd_config.headers_ignored,
+                                    request_config.ignore_paths.as_ref(),
                                     cmd_config.verbose,
                                 );
                             } else if !cmd_config.changes_only {
@@ -631,7 +490,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                             url: flow.url.clone(),
                             status_code: current_response.status_code,
                             headers: serde_json::to_string(&current_response.headers)?,
-                            body: current_response.body,
+                            body: current_response.body.raw,
                         }
                     };
                 }
