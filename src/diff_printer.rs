@@ -41,7 +41,7 @@ impl Difference {
                 println!("      + {}", new_val.red());
             }
             Difference::KeyRemoved { path, value } => {
-                println!("    Removed at '{}' ", path.bright_white());
+                println!("    Removed key at '{}' ", path.bright_white());
                 println!("      - {}", value.green());
             }
             Difference::KeyAdded { path, value } => {
@@ -246,7 +246,7 @@ pub fn print_differences(
                 Some(value2) => {
                     if value1 != value2 {
                         if !header_differences {
-                            println!("\n  Headers:");
+                            println!("{}", format!("\n  Headers:").bold());
                             header_differences = true;
                         }
 
@@ -278,7 +278,7 @@ pub fn print_differences(
                 }
                 None => {
                     if !header_differences {
-                        println!("\n  Headers:");
+                        println!("{}", format!("\n  Headers:").bold());
                         header_differences = true;
                     }
 
@@ -303,7 +303,7 @@ pub fn print_differences(
         for (key, value2) in headers2.iter() {
             if !headers1.contains_key(key) {
                 if !header_differences {
-                    println!("\n  Headers:");
+                    println!("{}", format!("\n  Headers:").bold());
                     header_differences = true;
                 }
 
@@ -336,7 +336,7 @@ pub fn print_differences(
         (Some(body1), Some(body2)) => {
             let mut differences = Vec::new();
 
-            println!("\n  Body (JSON):");
+            println!("{}", format!("\n  Body (JSON):").bold());
             find_json_differences("", &body1, &body2, &mut differences, 10, 0, &ignored_paths);
 
             if differences.is_empty() {

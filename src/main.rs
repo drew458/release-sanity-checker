@@ -85,13 +85,11 @@ impl HttpResponseData {
             return false;
         }
 
-        let body1 = self.body.clone();
-        let body2 = other.body.clone();
+        match (&self.body.json, &other.body.json) {
+            (Some(body1), Some(body2)) => {
+                let mut body1 = body1.clone();
+                let mut body2 = body2.clone();
 
-        // Try to convert the response bodies to JSON.
-        // If successful, compare the two JSON object, otherwise compare bodies as strings
-        match (body1.json, body2.json) {
-            (Some(mut body1), Some(mut body2)) => {
                 if let Some(ignored_paths) = ignored_paths {
                     for path in ignored_paths {
                         if let Some(val1) = body1.pointer_mut(path) {
@@ -216,6 +214,7 @@ async fn find_previous_response(
     };
 
     match sqlx::query(query)
+        .persistent(true)
         .bind(url)
         .bind(request_id)
         .fetch_optional(db)
@@ -528,6 +527,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let mut tx = db.begin().await?;
         for write in writes {
             sqlx::query(&query_str)
+                .persistent(true)
                 .bind(&write.request_id)
                 .bind(&write.url)
                 .bind(write.status_code)
