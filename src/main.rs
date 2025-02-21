@@ -36,45 +36,6 @@ struct HttpResponseData {
     body: ParsedBody,
 }
 
-#[derive(Serialize, Deserialize, Debug, Default)]
-struct RequestResponse {
-    request_id: String,
-    url: String,
-    current_http_response: HttpResponseData,
-    previous_http_response: Option<HttpResponseData>,
-    ignore_paths: Option<HashSet<String>>,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-struct RequestConfig {
-    url: String,
-    #[serde(default)]
-    headers: HashMap<String, String>,
-    #[serde(default)]
-    body: Value,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-struct RequestFlowConfig {
-    id: String,
-    flow: Vec<RequestConfig>,
-    ignore_paths: Option<HashSet<String>>,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-struct SanityCheckConfig {
-    requests: Vec<RequestFlowConfig>,
-}
-
-#[derive(Default)]
-struct CmdConfig {
-    config_paths: Vec<PathBuf>,
-    headers_ignored: bool,
-    baseline_mode: bool,
-    changes_only: bool,
-    verbose: bool,
-}
-
 impl HttpResponseData {
     fn new(status_code: u16, headers: HashMap<String, String>, body: String) -> HttpResponseData {
         HttpResponseData {
@@ -153,6 +114,45 @@ impl HttpResponseData {
 
         true
     }
+}
+
+#[derive(Serialize, Deserialize, Debug, Default)]
+struct RequestResponse {
+    request_id: String,
+    url: String,
+    status_code: u16,
+    headers: String,
+    body: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+struct RequestConfig {
+    url: String,
+    #[serde(default)]
+    headers: HashMap<String, String>,
+    #[serde(default)]
+    body: Value,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+struct RequestFlowConfig {
+    id: String,
+    flow: Vec<RequestConfig>,
+    ignore_paths: Option<HashSet<String>>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+struct SanityCheckConfig {
+    requests: Vec<RequestFlowConfig>,
+}
+
+#[derive(Default)]
+struct CmdConfig {
+    config_paths: Vec<PathBuf>,
+    headers_ignored: bool,
+    baseline_mode: bool,
+    changes_only: bool,
+    verbose: bool,
 }
 
 async fn fetch_response(
@@ -413,6 +413,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                             semaphore_exists_for_url = false;
                         }
                     }
+
                     if !semaphore_exists_for_url {
                         let mut url_to_semaphore = url_to_semaphore.write().await;
                         url_to_semaphore.insert(
@@ -420,6 +421,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                             Arc::new(Semaphore::new(REQUESTS_PER_HOST)),
                         );
                     }
+
                     let semaphore: Arc<Semaphore>;
                     {
                         let binding = url_to_semaphore.read().await;
@@ -447,25 +449,47 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                         }
                     }
 
-                    let mut prev_response = Option::None;
-                    if !cmd_config.baseline_mode {
-                        // Try to find a previous response for that request (identified by id and URL).
-                        prev_response = find_previous_response(
-                            &request_config.id,
-                            &flow.url,
-                            cmd_config.headers_ignored,
-                            db.as_ref(),
-                        )
-                        .await?;
-                    }
+                    // Try to find a previous response for that request (identified by id and URL).
+                    let prev_response = find_previous_response(
+                        &request_config.id,
+                        &flow.url,
+                        cmd_config.headers_ignored,
+                        db.as_ref(),
+                    )
+                    .await?;
 
                     if i == request_config.flow.len() - 1 {
+                        if !cmd_config.baseline_mode {
+                            if let Some(prev_response) = prev_response {
+                                if !prev_response.is_equal_to(
+                                    &current_response,
+                                    cmd_config.headers_ignored,
+                                    request_config.ignore_paths.as_ref(),
+                                ) {
+                                    print_differences(
+                                        &request_config.id,
+                                        &flow.url,
+                                        &prev_response,
+                                        &current_response,
+                                        cmd_config.headers_ignored,
+                                        request_config.ignore_paths.as_ref(),
+                                        cmd_config.verbose,
+                                    );
+                                } else if !cmd_config.changes_only {
+                                    println!(
+                                        "\n✅ Request '{}' of URL '{}' has not changed. ✅",
+                                        request_config.id, flow.url
+                                    );
+                                }
+                            }
+                        }
+
                         response = RequestResponse {
                             request_id: request_config.id.clone(),
                             url: flow.url.clone(),
-                            current_http_response: current_response,
-                            previous_http_response: prev_response,
-                            ignore_paths: request_config.ignore_paths.clone(),
+                            status_code: current_response.status_code,
+                            headers: serde_json::to_string(&current_response.headers)?,
+                            body: current_response.body.raw,
                         };
                     };
                 }
@@ -479,10 +503,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut writes: Vec<RequestResponse> = Vec::new();
     while let Some(result) = tasks.join_next().await {
         match result {
-            Ok(result) => {
-                //debug!("writes len is {:?}", result?);
-                writes.push(result?);
-            }
+            Ok(result) => writes.extend(result),
             Err(e) => eprintln!("{}", e),
         };
     }
@@ -505,40 +526,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     {
         let mut tx = db.begin().await?;
         for write in writes {
-            if !cmd_config.baseline_mode {
-                if let Some(prev_response) = write.previous_http_response {
-                    if !prev_response.is_equal_to(
-                        &write.current_http_response,
-                        cmd_config.headers_ignored,
-                        write.ignore_paths.as_ref(),
-                    ) {
-                        print_differences(
-                            &write.request_id,
-                            &write.url,
-                            &prev_response,
-                            &write.current_http_response,
-                            cmd_config.headers_ignored,
-                            write.ignore_paths.as_ref(),
-                            cmd_config.verbose,
-                        );
-                    } else if !cmd_config.changes_only {
-                        println!(
-                            "\n✅ Request '{}' of URL '{}' has not changed. ✅",
-                            write.request_id, write.url
-                        );
-                    }
-                }
-            }
-
             sqlx::query(&query_str)
                 .persistent(true)
                 .bind(&write.request_id)
                 .bind(&write.url)
-                .bind(write.current_http_response.status_code)
-                .bind(&write.current_http_response.body.raw)
-                .bind(&serde_json::to_string(
-                    &write.current_http_response.headers,
-                )?)
+                .bind(write.status_code)
+                .bind(&write.body)
+                .bind(&write.headers)
                 .execute(&mut *tx)
                 .await?;
         }
