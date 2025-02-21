@@ -28,21 +28,12 @@ struct HttpResponseData {
 }
 
 impl HttpResponseData {
-    async fn from_response(response: Response) -> Result<HttpResponseData, reqwest::Error> {
-        Ok(HttpResponseData {
-            status_code: response.status().as_u16(),
-            headers: response
-                .headers()
-                .iter()
-                .map(|(k, v)| {
-                    (
-                        k.as_str().to_string(),
-                        v.to_str().unwrap_or_default().to_string(),
-                    )
-                })
-                .collect(),
-            body: response.text().await?,
-        })
+    fn new(status_code: u16, headers: HashMap<String, String>, body: String) -> HttpResponseData {
+        HttpResponseData {
+            status_code,
+            headers,
+            body,
+        }
     }
 
     fn is_equal_to(
@@ -183,7 +174,20 @@ async fn fetch_response(
     let _permit = sempahore.acquire().await?;
     let response = request_builder.headers(header_map).send().await?;
 
-    Ok(HttpResponseData::from_response(response).await?)
+    Ok(HttpResponseData::new(
+        response.status().as_u16(),
+        response
+            .headers()
+            .iter()
+            .map(|(k, v)| {
+                (
+                    k.as_str().to_string(),
+                    v.to_str().unwrap_or_default().to_string(),
+                )
+            })
+            .collect(),
+        response.text().await?,
+    ))
 }
 
 // Find previous response for a request ID, if it exists
