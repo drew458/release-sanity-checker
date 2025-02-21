@@ -449,48 +449,48 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                         }
                     }
 
-                    if !cmd_config.baseline_mode {
-                        // Try to find a previous response for that request (identified by id and URL).
-                        // If it's found, check the differences
-                        if let Some(prev_response) = find_previous_response(
-                            &request_config.id,
-                            &flow.url,
-                            cmd_config.headers_ignored,
-                            db.as_ref(),
-                        )
-                        .await?
-                        {
-                            if !prev_response.is_equal_to(
-                                &current_response,
-                                cmd_config.headers_ignored,
-                                request_config.ignore_paths.as_ref(),
-                            ) {
-                                print_differences(
-                                    &request_config.id,
-                                    &flow.url,
-                                    &prev_response,
+                    // Try to find a previous response for that request (identified by id and URL).
+                    let prev_response = find_previous_response(
+                        &request_config.id,
+                        &flow.url,
+                        cmd_config.headers_ignored,
+                        db.as_ref(),
+                    )
+                    .await?;
+
+                    if i == request_config.flow.len() - 1 {
+                        if !cmd_config.baseline_mode {
+                            if let Some(prev_response) = prev_response {
+                                if !prev_response.is_equal_to(
                                     &current_response,
                                     cmd_config.headers_ignored,
                                     request_config.ignore_paths.as_ref(),
-                                    cmd_config.verbose,
-                                );
-                            } else if !cmd_config.changes_only {
-                                println!(
-                                    "\n✅ Request '{}' of URL '{}' has not changed. ✅",
-                                    request_config.id, flow.url
-                                );
+                                ) {
+                                    print_differences(
+                                        &request_config.id,
+                                        &flow.url,
+                                        &prev_response,
+                                        &current_response,
+                                        cmd_config.headers_ignored,
+                                        request_config.ignore_paths.as_ref(),
+                                        cmd_config.verbose,
+                                    );
+                                } else if !cmd_config.changes_only {
+                                    println!(
+                                        "\n✅ Request '{}' of URL '{}' has not changed. ✅",
+                                        request_config.id, flow.url
+                                    );
+                                }
                             }
                         }
-                    }
 
-                    if i == request_config.flow.len() - 1 {
                         response = RequestResponse {
                             request_id: request_config.id.clone(),
                             url: flow.url.clone(),
                             status_code: current_response.status_code,
                             headers: serde_json::to_string(&current_response.headers)?,
                             body: current_response.body.raw,
-                        }
+                        };
                     };
                 }
 
