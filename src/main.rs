@@ -151,7 +151,6 @@ struct CmdConfig {
     config_paths: Vec<PathBuf>,
     headers_ignored: bool,
     baseline_mode: bool,
-    changes_only: bool,
     verbose: bool,
 }
 
@@ -256,7 +255,6 @@ async fn process_args(
     let mut mode_file = true; // Default mode is --file
     let mut headers_ignored = false;
     let mut baseline_mode = false;
-    let mut changes_only = false;
     let mut verbose = false;
 
     let mut arg_iter = args.iter().skip(1);
@@ -310,7 +308,6 @@ async fn process_args(
             "--baseline" => {
                 baseline_mode = true;
             }
-            "--changes-only" => changes_only = true,
             "--verbose" => verbose = true,
             config_path if mode_file => {
                 // Default to file mode if no flag and it's the first non-flag arg
@@ -333,7 +330,6 @@ async fn process_args(
         config_paths,
         headers_ignored,
         baseline_mode,
-        changes_only,
         verbose,
     })
 }
@@ -478,7 +474,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                         request_config.ignore_paths.as_ref(),
                                         cmd_config.verbose,
                                     );
-                                } else if !cmd_config.changes_only {
+                                } else if cmd_config.verbose {
                                     println!(
                                         "\n✅ Request '{}' of URL '{}' has not changed. ✅",
                                         request_config.id, flow.url
@@ -559,8 +555,7 @@ fn print_usage(program_name: &str) {
     println!("  --directory <dir_path>        Run with all config files found in the directory.");
     println!("  --ignore-headers              Do not look for changes in response headers.");
     println!("  --baseline                    Build the baseline for the requests.");
-    println!("  --changes-only                Print only the changed responses.");
-    println!("  --verbose                     Print the full response body/header when changed.");
+    println!("  --verbose                     Print the full response body/header when changed and response that didn't change.");
     println!();
     println!("Examples:");
     println!(
