@@ -13,7 +13,7 @@ use std::{
     path::PathBuf,
     process,
     str::FromStr,
-    sync::Arc,
+    sync::{atomic::AtomicUsize, Arc},
     time::Duration,
 };
 use tokio::{
@@ -381,8 +381,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     //let global_semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_REQUESTS));
     let url_to_semaphore = Arc::new(RwLock::new(HashMap::new()));
     let print_mutex = Arc::new(tokio::sync::Mutex::new(()));
+    let requests_counter = Arc::new(AtomicUsize::new(0));
+    let changed_requests_counter = Arc::new(AtomicUsize::new(0));
 
     let mut tasks = JoinSet::new();
+
+    println!("Starting to process requests...");
 
     for config_path in cmd_config.config_paths {
         let config: SanityCheckConfig =
@@ -395,9 +399,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             let url_to_semaphore = url_to_semaphore.clone();
             //let global_semaphore = global_semaphore.clone();
             let print_mutex = print_mutex.clone();
+            let requests_counter = requests_counter.clone();
+            let changed_requests_counter = changed_requests_counter.clone();
 
             tasks.spawn(async move {
                 //let _global_permit = global_semaphore.acquire().await?;
+                requests_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
                 debug!("Checking request '{}'", request_config.id);
 
@@ -464,6 +471,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                     cmd_config.headers_ignored,
                                     request_config.ignore_paths.as_ref(),
                                 ) {
+                                    changed_requests_counter
+                                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                                     let _ = print_mutex.lock().await;
                                     print_differences(
                                         &request_config.id,
@@ -541,7 +550,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     if cmd_config.baseline_mode {
         println!("\nBaseline built successfully.");
     } else {
-        println!("\nResponse check completed.");
+        println!(
+            "\nResponse check completed. Changed request: {} out of {}",
+            changed_requests_counter.load(std::sync::atomic::Ordering::Relaxed),
+            requests_counter.load(std::sync::atomic::Ordering::Relaxed)
+        );
     }
 
     Ok(())
