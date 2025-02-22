@@ -386,7 +386,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let mut tasks = JoinSet::new();
 
-    println!("Starting to process requests...");
+    println!("Starting to process requests...\n");
 
     for config_path in cmd_config.config_paths {
         let config: SanityCheckConfig =
@@ -408,7 +408,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
                 debug!("Checking request '{}'", request_config.id);
 
-                let mut response = RequestResponse::default();
                 for i in 0..request_config.flow.len() {
                     let flow = request_config.flow.get(i).unwrap();
 
@@ -492,63 +491,48 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                             }
                         }
 
-                        response = RequestResponse {
-                            request_id: request_config.id.clone(),
-                            url: flow.url.clone(),
-                            status_code: current_response.status_code,
-                            headers: serde_json::to_string(&current_response.headers)?,
-                            body: current_response.body.raw,
+                        let query_str = if cmd_config.baseline_mode {
+                            "INSERT INTO response (request_id, url, baseline_status_code, baseline_body, baseline_headers)
+                                VALUES (?, ?, ?, ?, ?)
+                                ON CONFLICT (request_id, url) DO UPDATE SET baseline_status_code = excluded.baseline_status_code,
+                                        baseline_body = excluded.baseline_body,
+                                        baseline_headers = excluded.baseline_headers".to_string()
+                        } else {
+                            "INSERT INTO response (request_id, url, checktime_status_code, checktime_body, checktime_headers)
+                                VALUES (?, ?, ?, ?, ?)
+                                ON CONFLICT (request_id, url) DO UPDATE SET checktime_status_code = excluded.checktime_status_code,
+                                        checktime_body = excluded.checktime_body,
+                                        checktime_headers = excluded.checktime_headers".to_string()
                         };
+                        sqlx::query(&query_str)
+                            .persistent(true)
+                            .bind(&request_config.id)
+                            .bind(&flow.url)
+                            .bind(current_response.status_code)
+                            .bind(&current_response.body.raw,)
+                            .bind(serde_json::to_string(&current_response.headers)?)
+                            .execute(db.as_ref())
+                            .await?;
                     };
                 }
 
-                Ok::<RequestResponse, Box<dyn std::error::Error + Send + Sync>>(response)
+                Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
             });
         }
     }
 
-    // Collect results from intermediate operations
-    let mut writes: Vec<RequestResponse> = Vec::new();
+    // Wait for all tasks for finish
     while let Some(result) = tasks.join_next().await {
-        match result {
-            Ok(result) => writes.extend(result),
-            Err(e) => eprintln!("{}", e),
-        };
-    }
-
-    let query_str = if cmd_config.baseline_mode {
-        "INSERT INTO response (request_id, url, baseline_status_code, baseline_body, baseline_headers)
-            VALUES (?, ?, ?, ?, ?)
-            ON CONFLICT (request_id, url) DO UPDATE SET baseline_status_code = excluded.baseline_status_code,
-                    baseline_body = excluded.baseline_body,
-                    baseline_headers = excluded.baseline_headers".to_string()
-    } else {
-        "INSERT INTO response (request_id, url, checktime_status_code, checktime_body, checktime_headers)
-            VALUES (?, ?, ?, ?, ?)
-            ON CONFLICT (request_id, url) DO UPDATE SET checktime_status_code = excluded.checktime_status_code,
-                    checktime_body = excluded.checktime_body,
-                    checktime_headers = excluded.checktime_headers".to_string()
-    };
-
-    // Perform all database writes in a single transaction
-    {
-        let mut tx = db.begin().await?;
-        for write in writes {
-            sqlx::query(&query_str)
-                .persistent(true)
-                .bind(&write.request_id)
-                .bind(&write.url)
-                .bind(write.status_code)
-                .bind(&write.body)
-                .bind(&write.headers)
-                .execute(&mut *tx)
-                .await?;
+        if let Err(e) = result {
+            eprintln!("{}", e)
         }
-        tx.commit().await?;
     }
 
     if cmd_config.baseline_mode {
-        println!("\nBaseline built successfully.");
+        println!(
+            "\nBaseline built successfully. Processed {} requests",
+            requests_counter.load(std::sync::atomic::Ordering::Relaxed)
+        );
     } else {
         println!(
             "\nResponse check completed. Changed request: {} out of {}",
