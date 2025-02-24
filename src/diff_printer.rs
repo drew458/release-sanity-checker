@@ -88,6 +88,63 @@ fn format_value(value: &Value, max_length: usize) -> String {
     }
 }
 
+fn compare_objects(
+    path: &str,
+    map1: &serde_json::Map<String, Value>,
+    map2: &serde_json::Map<String, Value>,
+    differences: &mut Vec<Difference>,
+    max_depth: usize,
+    current_depth: usize,
+    ignored_paths: &Option<&HashSet<String>>,
+) {
+    let keys1: HashSet<&String> = map1.keys().collect();
+    let keys2: HashSet<&String> = map2.keys().collect();
+
+    // Find removed keys
+    for key in keys1.difference(&keys2) {
+        let new_path = if path.is_empty() {
+            key.to_string()
+        } else {
+            format!("{}/{}", path, key)
+        };
+        differences.push(Difference::KeyRemoved {
+            path: new_path,
+            value: format_value(&map1[*key], 50),
+        });
+    }
+
+    // Find added keys
+    for key in keys2.difference(&keys1) {
+        let new_path = if path.is_empty() {
+            key.to_string()
+        } else {
+            format!("{}/{}", path, key)
+        };
+        differences.push(Difference::KeyAdded {
+            path: new_path,
+            value: format_value(&map2[*key], 50),
+        });
+    }
+
+    // Compare common keys
+    for key in keys1.intersection(&keys2) {
+        let new_path = if path.is_empty() {
+            key.to_string()
+        } else {
+            format!("{}/{}", path, key)
+        };
+        find_json_differences(
+            &new_path,
+            &map1[*key],
+            &map2[*key],
+            differences,
+            max_depth,
+            current_depth + 1,
+            ignored_paths,
+        );
+    }
+}
+
 fn find_json_differences(
     path: &str,
     val1: &Value,
@@ -147,63 +204,6 @@ fn find_json_differences(
             });
         }
         _ => {}
-    }
-}
-
-fn compare_objects(
-    path: &str,
-    map1: &serde_json::Map<String, Value>,
-    map2: &serde_json::Map<String, Value>,
-    differences: &mut Vec<Difference>,
-    max_depth: usize,
-    current_depth: usize,
-    ignored_paths: &Option<&HashSet<String>>,
-) {
-    let keys1: HashSet<&String> = map1.keys().collect();
-    let keys2: HashSet<&String> = map2.keys().collect();
-
-    // Find removed keys
-    for key in keys1.difference(&keys2) {
-        let new_path = if path.is_empty() {
-            key.to_string()
-        } else {
-            format!("{}/{}", path, key)
-        };
-        differences.push(Difference::KeyRemoved {
-            path: new_path,
-            value: format_value(&map1[*key], 50),
-        });
-    }
-
-    // Find added keys
-    for key in keys2.difference(&keys1) {
-        let new_path = if path.is_empty() {
-            key.to_string()
-        } else {
-            format!("{}/{}", path, key)
-        };
-        differences.push(Difference::KeyAdded {
-            path: new_path,
-            value: format_value(&map2[*key], 50),
-        });
-    }
-
-    // Compare common keys
-    for key in keys1.intersection(&keys2) {
-        let new_path = if path.is_empty() {
-            key.to_string()
-        } else {
-            format!("{}/{}", path, key)
-        };
-        find_json_differences(
-            &new_path,
-            &map1[*key],
-            &map2[*key],
-            differences,
-            max_depth,
-            current_depth + 1,
-            ignored_paths,
-        );
     }
 }
 
