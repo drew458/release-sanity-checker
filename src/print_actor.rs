@@ -63,6 +63,6 @@ pub async fn run_differences_printer(mut actor: DifferencesPrinter) {
         actor.handle_message(msg);
     }
 
-    // Signal we're done if a done_signal was provided
+    // Signal we're done
     let _ = actor.done_signal.send(());
 }

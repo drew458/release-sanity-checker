@@ -472,17 +472,17 @@ pub fn compute_differences(
         }
     }
 
-    match (response1.body.json.clone(), response2.body.json.clone()) {
+    match (&response1.body.json, &response2.body.json) {
         // JSON body
         (Some(body1), Some(body2)) => {
-            find_json_differences("", &body1, &body2, &mut differences, 10, 0, &ignored_paths);
+            find_json_differences("", body1, body2, &mut differences, 10, 0, &ignored_paths);
         }
         // String body
         _ => {
             if response1.body != response2.body {
                 differences.push(Difference::DifferentBodyString {
                     before: response1.body.raw.clone(),
-                    after: response1.body.raw.clone(),
+                    after: response2.body.raw.clone(),
                 });
             }
         }

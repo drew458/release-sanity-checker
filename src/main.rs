@@ -167,8 +167,8 @@ async fn find_previous_response(
                 status_code: row.get("baseline_status_code"),
                 headers,
                 body: ParsedBody {
-                    raw: body.clone(),
                     json: serde_json::from_str(&body).ok(),
+                    raw: body,
                 },
             }))
         }
@@ -403,6 +403,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                         )
                         .await?;
 
+                        // If it's the last request of the flow, run the check on the response
                         if i == request_config.flow.len() - 1 {
                             if !cmd_config.baseline_mode {
                                 if let Some(prev_response) = prev_response {
@@ -473,8 +474,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         }
     }
 
-    //TODO DO NOT EXIT UNTIL print_actor CAN PROCESS MESSAGES
-    done_rx.await?; // Wait for printer to confirm it's done
+    done_rx.await?; // Wait for print_actor to confirm it's done
 
     if cmd_config.baseline_mode {
         println!(
