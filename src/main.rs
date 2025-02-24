@@ -521,23 +521,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         }
     }
 
+    let mut errors_count = 0;
+
     // Wait for all tasks for finish
     while let Some(result) = tasks.join_next().await {
-        if let Err(e) = result {
-            eprintln!("{}", e)
+        match result {
+            Ok(r) => {
+                if let Err(e) = r {
+                    errors_count += 1;
+                    eprintln!("{}", e)
+                }
+            },
+            Err(e) => eprintln!("{}", e),
         }
     }
 
     if cmd_config.baseline_mode {
         println!(
-            "\nBaseline built successfully. Processed {} requests",
-            requests_counter.load(std::sync::atomic::Ordering::Relaxed)
+            "\nBaseline built successfully. Processed {} requests, errors: {}",
+            requests_counter.load(std::sync::atomic::Ordering::Relaxed), errors_count
         );
     } else {
         println!(
-            "\nResponse check completed. Changed request: {} out of {}",
+            "\nResponse check completed. Changed request: {} out of {}. Errors: {}",
             changed_requests_counter.load(std::sync::atomic::Ordering::Relaxed),
-            requests_counter.load(std::sync::atomic::Ordering::Relaxed)
+            requests_counter.load(std::sync::atomic::Ordering::Relaxed), 
+            errors_count
         );
     }
 
