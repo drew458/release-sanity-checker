@@ -1,8 +1,10 @@
-mod diff_printer;
+mod diff_finder;
+mod print_actor;
 
-use diff_printer::print_differences;
+use diff_finder::compute_differences;
 
 use log::debug;
+use print_actor::{DifferencesPrinter, DifferencesPrinterMessage};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -18,7 +20,7 @@ use std::{
 };
 use tokio::{
     fs,
-    sync::{RwLock, Semaphore},
+    sync::{mpsc, RwLock, Semaphore},
     task::JoinSet,
 };
 
@@ -46,73 +48,6 @@ impl HttpResponseData {
                 json: serde_json::from_str(&body).ok(),
             },
         }
-    }
-
-    fn is_equal_to(
-        &self,
-        other: &HttpResponseData,
-        headers_ignored: bool,
-        ignored_paths: Option<&HashSet<String>>,
-    ) -> bool {
-        /*
-        fn remove_ignored_fields(value: &mut Value, ignored_fields: &[String]) {
-            match value {
-                Value::Object(map) => {
-                    // Remove ignored fields at this level
-                    ignored_fields.iter().for_each(|field| {
-                        map.remove(field);
-                    });
-                    // Recursively process remaining fields
-                    map.values_mut().for_each(|v| {
-                        remove_ignored_fields(v, ignored_fields);
-                    });
-                }
-                Value::Array(arr) => {
-                    arr.iter_mut().for_each(|v| {
-                        remove_ignored_fields(v, ignored_fields);
-                    });
-                }
-                _ => {}
-            }
-        }
-        */
-
-        if self.status_code != other.status_code {
-            return false;
-        }
-
-        if !headers_ignored && self.headers != other.headers {
-            return false;
-        }
-
-        match (&self.body.json, &other.body.json) {
-            (Some(body1), Some(body2)) => {
-                let mut body1 = body1.clone();
-                let mut body2 = body2.clone();
-
-                if let Some(ignored_paths) = ignored_paths {
-                    for path in ignored_paths {
-                        if let Some(val1) = body1.pointer_mut(path) {
-                            *val1 = Value::Null;
-                        }
-                        if let Some(val2) = body2.pointer_mut(path) {
-                            *val2 = Value::Null;
-                        }
-                    }
-                }
-
-                if body1 != body2 {
-                    return false;
-                }
-            }
-            _ => {
-                if self.body != other.body {
-                    return false;
-                }
-            }
-        };
-
-        true
     }
 }
 
@@ -380,172 +315,178 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     //let global_semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_REQUESTS));
     let url_to_semaphore = Arc::new(RwLock::new(HashMap::new()));
-    let print_mutex = Arc::new(tokio::sync::Mutex::new(()));
     let requests_counter = Arc::new(AtomicUsize::new(0));
     let changed_requests_counter = Arc::new(AtomicUsize::new(0));
 
     let mut tasks = JoinSet::new();
+    let mut errors_count = 0;
 
-    println!("Starting to process requests...\n");
+    let (done_tx, done_rx) = tokio::sync::oneshot::channel();
+    {
+        let (sender, receiver) = mpsc::channel(8);
+        let printer = DifferencesPrinter::new(receiver, done_tx);
+        tokio::spawn(print_actor::run_differences_printer(printer));
 
-    for config_path in cmd_config.config_paths {
-        let config: SanityCheckConfig =
-            serde_json::from_str(&fs::read_to_string(&config_path).await?)?;
+        println!("Starting to process requests...\n");
 
-        // Process requests inside config file concurrently
-        for request_config in config.requests {
-            let db = db.clone();
-            let http_client = http_client.clone();
-            let url_to_semaphore = url_to_semaphore.clone();
-            //let global_semaphore = global_semaphore.clone();
-            let print_mutex = print_mutex.clone();
-            let requests_counter = requests_counter.clone();
-            let changed_requests_counter = changed_requests_counter.clone();
+        for config_path in cmd_config.config_paths {
+            let config: SanityCheckConfig =
+                serde_json::from_str(&fs::read_to_string(&config_path).await?)?;
 
-            tasks.spawn(async move {
-                //let _global_permit = global_semaphore.acquire().await?;
-                requests_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            // Process requests inside config file concurrently
+            for request_config in config.requests {
+                let db = db.clone();
+                let http_client = http_client.clone();
+                let url_to_semaphore = url_to_semaphore.clone();
+                //let global_semaphore = global_semaphore.clone();
+                let requests_counter = requests_counter.clone();
+                let changed_requests_counter = changed_requests_counter.clone();
+                let print_sender = sender.clone();
 
-                debug!("Checking request '{}'", request_config.id);
+                tasks.spawn(async move {
+                    //let _global_permit = global_semaphore.acquire().await?;
+                    requests_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
-                for i in 0..request_config.flow.len() {
-                    let flow = request_config.flow.get(i).unwrap();
+                    debug!("Checking request '{}'", request_config.id);
 
-                    let mut semaphore_exists_for_url = true;
-                    {
-                        if url_to_semaphore.read().await.get(&flow.url).is_none() {
-                            semaphore_exists_for_url = false;
+                    for i in 0..request_config.flow.len() {
+                        let flow = request_config.flow.get(i).unwrap();
+
+                        let mut semaphore_exists_for_url = true;
+                        {
+                            if url_to_semaphore.read().await.get(&flow.url).is_none() {
+                                semaphore_exists_for_url = false;
+                            }
                         }
-                    }
 
-                    if !semaphore_exists_for_url {
-                        let mut url_to_semaphore = url_to_semaphore.write().await;
-                        url_to_semaphore.insert(
-                            flow.url.clone(),
-                            Arc::new(Semaphore::new(REQUESTS_PER_HOST)),
-                        );
-                    }
+                        if !semaphore_exists_for_url {
+                            let mut url_to_semaphore = url_to_semaphore.write().await;
+                            url_to_semaphore.insert(
+                                flow.url.clone(),
+                                Arc::new(Semaphore::new(REQUESTS_PER_HOST)),
+                            );
+                        }
 
-                    let semaphore: Arc<Semaphore>;
-                    {
-                        let binding = url_to_semaphore.read().await;
-                        semaphore = binding.get(&flow.url).cloned().unwrap();
-                    }
+                        let semaphore: Arc<Semaphore>;
+                        {
+                            let binding = url_to_semaphore.read().await;
+                            semaphore = binding.get(&flow.url).cloned().unwrap();
+                        }
 
-                    let mut retries: i8 = 3;
-                    let mut current_response = HttpResponseData::default();
-                    while retries > 0 {
-                        debug!("Sending request {} to {}", request_config.id, flow.url);
-                        current_response = fetch_response(
+                        let mut retries: i8 = 3;
+                        let mut current_response = HttpResponseData::default();
+                        while retries > 0 {
+                            debug!("Sending request {} to {}", request_config.id, flow.url);
+                            current_response = fetch_response(
+                                &flow.url,
+                                &flow.headers,
+                                &flow.body,
+                                &http_client,
+                                &semaphore,
+                            )
+                            .await?;
+                            debug!("Request {} to {} done", request_config.id, flow.url);
+
+                            if current_response.status_code >= 500 {
+                                retries -= 1;
+                            } else {
+                                break;
+                            }
+                        }
+
+                        // Try to find a previous response for that request (identified by id and URL).
+                        let prev_response = find_previous_response(
+                            &request_config.id,
                             &flow.url,
-                            &flow.headers,
-                            &flow.body,
-                            &http_client,
-                            &semaphore,
+                            cmd_config.headers_ignored,
+                            db.as_ref(),
                         )
                         .await?;
-                        debug!("Request {} to {} done", request_config.id, flow.url);
 
-                        if current_response.status_code >= 500 {
-                            retries -= 1;
-                        } else {
-                            break;
-                        }
-                    }
-
-                    // Try to find a previous response for that request (identified by id and URL).
-                    let prev_response = find_previous_response(
-                        &request_config.id,
-                        &flow.url,
-                        cmd_config.headers_ignored,
-                        db.as_ref(),
-                    )
-                    .await?;
-
-                    if i == request_config.flow.len() - 1 {
-                        if !cmd_config.baseline_mode {
-                            if let Some(prev_response) = prev_response {
-                                if !prev_response.is_equal_to(
-                                    &current_response,
-                                    cmd_config.headers_ignored,
-                                    request_config.ignore_paths.as_ref(),
-                                ) {
-                                    changed_requests_counter
-                                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                                    let _ = print_mutex.lock().await;
-                                    print_differences(
-                                        &request_config.id,
-                                        &flow.url,
+                        if i == request_config.flow.len() - 1 {
+                            if !cmd_config.baseline_mode {
+                                if let Some(prev_response) = prev_response {
+                                    
+                                    let differences = compute_differences(
                                         &prev_response,
                                         &current_response,
                                         cmd_config.headers_ignored,
                                         request_config.ignore_paths.as_ref(),
-                                        cmd_config.verbose,
                                     );
-                                } else if cmd_config.verbose {
-                                    println!(
-                                        "\n✅ Request '{}' of URL '{}' has not changed. ✅",
-                                        request_config.id, flow.url
-                                    );
+
+                                    if differences.is_empty() {
+                                        if cmd_config.verbose {
+                                            println!(
+                                                "\n✅ Request '{}' of URL '{}' has not changed. ✅",
+                                                request_config.id, flow.url
+                                            );
+                                        }
+                                    } else {
+                                        changed_requests_counter
+                                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                        print_sender.send(DifferencesPrinterMessage::PrintDifferences { differences, request_id: request_config.id.clone(), url: flow.url.clone() }).await?
+                                    }
                                 }
                             }
-                        }
 
-                        let query_str = if cmd_config.baseline_mode {
-                            "INSERT INTO response (request_id, url, baseline_status_code, baseline_body, baseline_headers)
-                                VALUES (?, ?, ?, ?, ?)
-                                ON CONFLICT (request_id, url) DO UPDATE SET baseline_status_code = excluded.baseline_status_code,
-                                        baseline_body = excluded.baseline_body,
-                                        baseline_headers = excluded.baseline_headers".to_string()
-                        } else {
-                            "INSERT INTO response (request_id, url, checktime_status_code, checktime_body, checktime_headers)
-                                VALUES (?, ?, ?, ?, ?)
-                                ON CONFLICT (request_id, url) DO UPDATE SET checktime_status_code = excluded.checktime_status_code,
-                                        checktime_body = excluded.checktime_body,
-                                        checktime_headers = excluded.checktime_headers".to_string()
+                            let query_str = if cmd_config.baseline_mode {
+                                "INSERT INTO response (request_id, url, baseline_status_code, baseline_body, baseline_headers)
+                                    VALUES (?, ?, ?, ?, ?)
+                                    ON CONFLICT (request_id, url) DO UPDATE SET baseline_status_code = excluded.baseline_status_code,
+                                            baseline_body = excluded.baseline_body,
+                                            baseline_headers = excluded.baseline_headers".to_string()
+                            } else {
+                                "INSERT INTO response (request_id, url, checktime_status_code, checktime_body, checktime_headers)
+                                    VALUES (?, ?, ?, ?, ?)
+                                    ON CONFLICT (request_id, url) DO UPDATE SET checktime_status_code = excluded.checktime_status_code,
+                                            checktime_body = excluded.checktime_body,
+                                            checktime_headers = excluded.checktime_headers".to_string()
+                            };
+                            sqlx::query(&query_str)
+                                .persistent(true)
+                                .bind(&request_config.id)
+                                .bind(&flow.url)
+                                .bind(current_response.status_code)
+                                .bind(&current_response.body.raw,)
+                                .bind(serde_json::to_string(&current_response.headers)?)
+                                .execute(db.as_ref())
+                                .await?;
                         };
-                        sqlx::query(&query_str)
-                            .persistent(true)
-                            .bind(&request_config.id)
-                            .bind(&flow.url)
-                            .bind(current_response.status_code)
-                            .bind(&current_response.body.raw,)
-                            .bind(serde_json::to_string(&current_response.headers)?)
-                            .execute(db.as_ref())
-                            .await?;
-                    };
-                }
+                    }
 
-                Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
-            });
+                    Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
+                });
+            }
+        }
+
+        // Wait for all tasks for finish
+        while let Some(result) = tasks.join_next().await {
+            match result {
+                Ok(r) => {
+                    if let Err(e) = r {
+                        errors_count += 1;
+                        eprintln!("{}", e)
+                    }
+                }
+                Err(e) => eprintln!("{}", e),
+            }
         }
     }
 
-    let mut errors_count = 0;
-
-    // Wait for all tasks for finish
-    while let Some(result) = tasks.join_next().await {
-        match result {
-            Ok(r) => {
-                if let Err(e) = r {
-                    errors_count += 1;
-                    eprintln!("{}", e)
-                }
-            },
-            Err(e) => eprintln!("{}", e),
-        }
-    }
+    //TODO DO NOT EXIT UNTIL print_actor CAN PROCESS MESSAGES
+    done_rx.await?; // Wait for printer to confirm it's done
 
     if cmd_config.baseline_mode {
         println!(
             "\nBaseline built successfully. Processed {} requests, errors: {}",
-            requests_counter.load(std::sync::atomic::Ordering::Relaxed), errors_count
+            requests_counter.load(std::sync::atomic::Ordering::Relaxed),
+            errors_count
         );
     } else {
         println!(
             "\nResponse check completed. Changed request: {} out of {}. Errors: {}",
             changed_requests_counter.load(std::sync::atomic::Ordering::Relaxed),
-            requests_counter.load(std::sync::atomic::Ordering::Relaxed), 
+            requests_counter.load(std::sync::atomic::Ordering::Relaxed),
             errors_count
         );
     }
