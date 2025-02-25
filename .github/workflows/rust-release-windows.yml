@@ -29,23 +29,10 @@ jobs:
           command: build
           args: --release --target x86_64-pc-windows-gnu
 
-      - name: Create Release
-        id: create_release
-        uses: actions/create-release@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tag_name: ${{ github.ref }}
-          release_name: Release ${{ github.ref }}
-          draft: false
-          prerelease: false
-
       - name: Upload Release Asset
-        uses: actions/upload-release-asset@v1
+        uses: ncipollo/release-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: ./target/x86_64-pc-windows-gnu/release/release-sanity-checker.exe
-          asset_name: release-sanity-checker-x86_64-windows.exe
-          asset_content_type: application/octet-stream
+          artifacts: ./target/x86_64-pc-windows-gnu/release/release-sanity-checker*
+          allowUpdates: true
