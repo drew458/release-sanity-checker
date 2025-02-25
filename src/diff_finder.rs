@@ -440,7 +440,7 @@ pub fn compute_differences(
                     Some(value2) => {
                         if value1 != value2 {
                             let min_len = std::cmp::min(value1.len(), value2.len());
-    
+
                             differences.push(Difference::HeaderValueChanged {
                                 header_name: key.to_string(),
                                 old_val: value1
@@ -461,7 +461,7 @@ pub fn compute_differences(
                     }
                 }
             }
-    
+
             for (key, _value2) in headers2.iter() {
                 if !headers1.contains_key(key) {
                     differences.push(Difference::HeaderValueAdded {

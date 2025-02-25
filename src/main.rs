@@ -12,6 +12,7 @@ use sqlx::{sqlite::SqliteConnectOptions, Pool, Row, Sqlite, SqlitePool};
 use std::{
     collections::{HashMap, HashSet},
     env::{self},
+    num::NonZero,
     path::PathBuf,
     process,
     str::FromStr,
@@ -44,8 +45,8 @@ impl HttpResponseData {
             status_code,
             headers,
             body: ParsedBody {
-                raw: body.clone(),
                 json: serde_json::from_str(&body).ok(),
+                raw: body,
             },
         }
     }
@@ -123,12 +124,7 @@ async fn fetch_response(
         response
             .headers()
             .iter()
-            .map(|(k, v)| {
-                (
-                    k.as_str().to_string(),
-                    v.to_str().unwrap_or_default().to_string(),
-                )
-            })
+            .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or_default().to_string()))
             .collect(),
         response.text().await?,
     ))
@@ -179,10 +175,10 @@ async fn find_previous_response(
 async fn process_args(
     args: Vec<String>,
 ) -> Result<CmdConfig, Box<dyn std::error::Error + Send + Sync>> {
-    let program_name = args[0].clone();
+    let program_name = &args[0];
 
     if args.len() > 1 && args[1] == "--help" {
-        print_usage(&program_name);
+        print_usage(program_name);
         process::exit(0);
     }
 
@@ -313,7 +309,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .tcp_keepalive(Duration::from_secs(60))
         .build()?;
 
-    //let global_semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_REQUESTS));
     let url_to_semaphore = Arc::new(RwLock::new(HashMap::new()));
     let requests_counter = Arc::new(AtomicUsize::new(0));
     let changed_requests_counter = Arc::new(AtomicUsize::new(0));
@@ -323,7 +318,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let (done_tx, done_rx) = tokio::sync::oneshot::channel();
     {
-        let (sender, receiver) = mpsc::channel(8);
+        let (sender, receiver) = mpsc::channel(
+            std::thread::available_parallelism()
+                .unwrap_or(NonZero::new(8).unwrap())
+                .into(),
+        );
         let printer = DifferencesPrinter::new(receiver, done_tx);
         tokio::spawn(print_actor::run_differences_printer(printer));
 
@@ -338,17 +337,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 let db = db.clone();
                 let http_client = http_client.clone();
                 let url_to_semaphore = url_to_semaphore.clone();
-                //let global_semaphore = global_semaphore.clone();
                 let requests_counter = requests_counter.clone();
                 let changed_requests_counter = changed_requests_counter.clone();
                 let print_sender = sender.clone();
 
                 tasks.spawn(async move {
-                    //let _global_permit = global_semaphore.acquire().await?;
                     requests_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
                     debug!("Checking request '{}'", request_config.id);
 
+                    // Flow is processed serially
                     for i in 0..request_config.flow.len() {
                         let flow = request_config.flow.get(i).unwrap();
 
@@ -358,7 +356,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                 semaphore_exists_for_url = false;
                             }
                         }
-
                         if !semaphore_exists_for_url {
                             let mut url_to_semaphore = url_to_semaphore.write().await;
                             url_to_semaphore.insert(
@@ -366,7 +363,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                 Arc::new(Semaphore::new(REQUESTS_PER_HOST)),
                             );
                         }
-
                         let semaphore: Arc<Semaphore>;
                         {
                             let binding = url_to_semaphore.read().await;
@@ -385,7 +381,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                 &semaphore,
                             )
                             .await?;
-                            debug!("Request {} to {} done", request_config.id, flow.url);
 
                             if current_response.status_code >= 500 {
                                 retries -= 1;
@@ -393,8 +388,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                 break;
                             }
                         }
+                        debug!("Request {} to {} done", request_config.id, flow.url);
 
-                        // Try to find a previous response for that request (identified by id and URL).
+                        // Try to find a previous response for that request (identified by id and URL)
                         let prev_response = find_previous_response(
                             &request_config.id,
                             &flow.url,
@@ -407,7 +403,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                         if i == request_config.flow.len() - 1 {
                             if !cmd_config.baseline_mode {
                                 if let Some(prev_response) = prev_response {
-                                    
                                     let differences = compute_differences(
                                         &prev_response,
                                         &current_response,
@@ -425,7 +420,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                     } else {
                                         changed_requests_counter
                                             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                                        print_sender.send(DifferencesPrinterMessage::PrintDifferences { differences, request_id: request_config.id.clone(), url: flow.url.clone() }).await?
+                                        print_sender.send(DifferencesPrinterMessage::PrintDifferences {
+                                            differences, request_id: request_config.id.clone(), url: flow.url.clone()
+                                        }).await?
                                     }
                                 }
                             }
