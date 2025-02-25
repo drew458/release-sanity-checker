@@ -37,6 +37,13 @@ release-sanity-checker [options] <config_path>
 
 ### Examples
 
+- **Build the baseline**
+
+```bash
+release-sanity-checker --baseline config.json
+release-sanity-checker --baseline --directory examples
+```
+
 - **Run with a specific config file**
 
 ```bash
@@ -56,49 +63,90 @@ release-sanity-checker --directory examples
 release-sanity-checker --file config.json --ignore-headers
 ```
 
-- **Build a new baseline**
-
-```bash
-release-sanity-checker --file config.json --baseline
-```
-
 ## Configuration File Format
+
+**Requests object**
 
 The configuration file is a JSON file containing an array of request definitions. Each request definition must have the following fields:
 
-| Name | Mandatory | Description | 
-|---|---|---|
-| id | Y | A unique identifier for the request |
-| url | Y | The URL to make the request to |
-| headers | N | A map of headers to include in the request |
-| body | N | The request body (can be any valid JSON value) |
+| Name | Type | Mandatory | Description | 
+|---|---|---|---|
+| id | String | Y | A unique identifier for the request |
+| flow | Array | Y | The HTTP requests to run. Only the last one will be checked for differences in the response |
+| ignore_paths | Array | N | A list of path to ignore in the response when checking for differences |
+
+**Flow object**
+
+| Name | Type | Mandatory | Description | 
+|---|---|---|---|
+| url | String | Y | The URL to make the request to |
+| headers | Object | N | A map of headers to include in the request |
+| body | Object | N | The request body (can be any valid JSON value) |
+
 
 ```JSON
-
 {
-  "requests": [
-    {
-      "id": "get_objects",
-      "url": "[https://api.example.com/objects](https://www.google.com/search?q=https://api.example.com/objects)",
-      "headers": {
-        "Content-Type": "application/json"
-      }
-    },
-    {
-      "id": "create_object",
-      "url": "[https://api.example.com/objects](https://www.google.com/search?q=https://api.example.com/objects)",
-      "headers": {
-        "Content-Type": "application/json"
-      },
-      "body": {
-        "name": "New Object",
-        "value": 123
-      }
-    }
-  ]
+    "requests": [
+        {
+            "id": "1",
+            "flow": [
+                {
+                    "url": "https://api.restful-api.dev/objects",
+                    "headers": {
+                        "Content-Type": "application/json"
+                    },
+                    "body": {
+                        "name": "Apple MacBook Pro 16",
+                        "data": {
+                            "year": 2019,
+                            "price": 1849.99,
+                            "CPU model": "Intel Core i9",
+                            "Hard disk size": "1 TB"
+                        }
+                    }
+                },
+                {
+                    "url": "https://api.restful-api.dev/objects",
+                    "headers": {
+                        "Content-Type": "application/json"
+                    },
+                    "body": {
+                        "name": "Apple MacBook Pro 16",
+                        "data": {
+                            "year": 2019,
+                            "price": 1849.99,
+                            "CPU model": "Intel Core i9",
+                            "Hard disk size": "1 TB"
+                        }
+                    }
+                }
+            ],
+            "ignore_paths": ["/createdAt", "/id"]
+        },
+        {
+            "id": "2",
+            "flow": [
+                {
+                    "url": "https://api.restful-api.dev/objects",
+                    "headers": {
+                        "Content-Type": "application/json"
+                    },
+                    "body": {
+                        "name": "Apple MacBook Pro 16",
+                        "data": {
+                            "year": 2019,
+                            "price": 1849.99,
+                            "CPU model": "Intel Core i9",
+                            "Hard disk size": "1 TB"
+                        }
+                    }
+                }
+            ]
+        }
+    ]
 }
 ```
 
 ## Database
 
-The tool uses a SQLite database file named `release-sanity-checker-data.db` to store previous responses. This file is created in the current working directory.
+The tool uses a SQLite database file named `release-sanity-checker-data.db` to store previous responses. This file is created in the current working directory along with the WAL files (`release-sanity-checker-data.db-shm` and `release-sanity-checker-data.db-wal`).
