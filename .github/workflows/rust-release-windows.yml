@@ -34,5 +34,6 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          artifacts: ./target/x86_64-pc-windows-gnu/release/release-sanity-checker*
+          artifacts: ./target/x86_64-pc-windows-gnu/release/release-sanity-checker.exe
           allowUpdates: true
+          replacesArtifacts: false

@@ -36,3 +36,4 @@ jobs:
         with:
           artifacts: ./target/x86_64-unknown-linux-gnu/release/release-sanity-checker
           allowUpdates: true
+          replacesArtifacts: false
