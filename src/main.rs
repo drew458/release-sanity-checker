@@ -12,7 +12,6 @@ use sqlx::{sqlite::SqliteConnectOptions, Pool, Row, Sqlite, SqlitePool};
 use std::{
     collections::{HashMap, HashSet},
     env::{self},
-    num::NonZero,
     path::PathBuf,
     process,
     str::FromStr,
@@ -21,7 +20,7 @@ use std::{
 };
 use tokio::{
     fs,
-    sync::{mpsc, RwLock, Semaphore},
+    sync::{RwLock, Semaphore},
     task::JoinSet,
 };
 
@@ -318,13 +317,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let (done_tx, done_rx) = tokio::sync::oneshot::channel();
     {
-        let (sender, receiver) = mpsc::channel(
-            std::thread::available_parallelism()
-                .unwrap_or(NonZero::new(8).unwrap())
-                .into(),
-        );
+        let (sender, receiver) = tokio::sync::mpsc::channel(100);
         let printer = DifferencesPrinter::new(receiver, done_tx);
-        tokio::spawn(print_actor::run_differences_printer(printer));
+        tokio::task::spawn(print_actor::run_differences_printer(printer));
 
         println!("Starting to process requests...\n");
 
@@ -370,25 +365,41 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                         }
 
                         let mut retries: i8 = 3;
-                        let mut current_response = HttpResponseData::default();
+                        let mut current_response = Option::None;
                         while retries > 0 {
                             debug!("Sending request {} to {}", request_config.id, flow.url);
-                            current_response = fetch_response(
+
+                            match fetch_response(
                                 &flow.url,
                                 &flow.headers,
                                 &flow.body,
                                 &http_client,
                                 &semaphore,
                             )
-                            .await?;
-
-                            if current_response.status_code >= 500 {
-                                retries -= 1;
-                            } else {
-                                break;
+                            .await {
+                                Ok(res) => {
+                                    if res.status_code >= 500 {
+                                        retries -= 1;
+                                    } else {
+                                        current_response = Some(res);
+                                        break;
+                                    }
+                                },
+                                Err(e) => {
+                                    debug!("{}", e);
+                                    retries -= 1;
+                                },
                             }
                         }
+
+                        if current_response.is_none() {
+                            return Err(format!("Failed to get response for request '{}' to '{}' after multiple retries", 
+                                request_config.id, flow.url).into());
+                        }
+
                         debug!("Request {} to {} done", request_config.id, flow.url);
+
+                        let current_response = current_response.expect("Response cannot be None!");
 
                         // Try to find a previous response for that request (identified by id and URL)
                         let prev_response = find_previous_response(
@@ -471,7 +482,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         }
     }
 
-    done_rx.await?; // Wait for print_actor to confirm it's done
+    let _ = done_rx.await; // Wait for print_actor to confirm it's done
 
     if cmd_config.baseline_mode {
         println!(

@@ -21,3 +21,7 @@ strip = true       # Strip symbols from the binary for smaller size (and slightl
 
 [profile.release.build-override] # Override for dependencies during release builds
 opt-level = 3      # Apply same optimization level to dependencies as well
+
+[profile.profiling]
+inherits = "release"
+debug = true
