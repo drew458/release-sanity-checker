@@ -8,7 +8,10 @@ use print_actor::{DifferencesPrinter, DifferencesPrinterMessage};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use sqlx::{sqlite::SqliteConnectOptions, Pool, Row, Sqlite, SqlitePool};
+use sqlx::{
+    sqlite::{SqliteConnectOptions, SqlitePoolOptions},
+    Pool, Row, Sqlite, SqlitePool,
+};
 use std::{
     collections::{HashMap, HashSet},
     env::{self},
@@ -275,14 +278,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let cmd_config = process_args(args).await?;
 
     let db = Arc::new(
-        SqlitePool::connect_with(
-            SqliteConnectOptions::from_str("sqlite://release-sanity-checker-data.db")?
-                .create_if_missing(true)
-                .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
-                .synchronous(sqlx::sqlite::SqliteSynchronous::Normal)
-                .locking_mode(sqlx::sqlite::SqliteLockingMode::Normal),
-        )
-        .await?,
+        SqlitePoolOptions::new()
+            .max_connections(20)
+            .acquire_timeout(Duration::from_secs(1))
+            .connect_with(
+                SqliteConnectOptions::from_str("sqlite://release-sanity-checker-data.db")?
+                    .create_if_missing(true)
+                    .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+                    .synchronous(sqlx::sqlite::SqliteSynchronous::Normal)
+                    .locking_mode(sqlx::sqlite::SqliteLockingMode::Normal),
+            )
+            .await?,
     );
     let _ = sqlx::query(
         "CREATE TABLE IF NOT EXISTS response (
