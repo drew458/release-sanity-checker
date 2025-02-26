@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sqlx::{
     sqlite::{SqliteConnectOptions, SqlitePoolOptions},
-    Pool, Row, Sqlite, SqlitePool,
+    Pool, Row, Sqlite,
 };
 use std::{
     collections::{HashMap, HashSet},
@@ -269,8 +269,10 @@ async fn process_args(
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    //const MAX_CONCURRENT_REQUESTS: usize = 200;  // Max concurrent HTTP requests overall
-    const REQUESTS_PER_HOST: usize = 30; // Max concurrent requests per host
+    let requests_per_host: u16 = env::var("REQUESTS_PER_HOST")
+        .unwrap_or(30.to_string())
+        .parse()
+        .unwrap_or(30);
 
     env_logger::init();
 
@@ -310,7 +312,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let http_client = reqwest::ClientBuilder::new()
         .connect_timeout(Duration::from_secs(10))
         .timeout(Duration::from_secs(10))
-        .pool_max_idle_per_host(REQUESTS_PER_HOST)
+        .pool_max_idle_per_host(requests_per_host.into())
         .tcp_keepalive(Duration::from_secs(60))
         .build()?;
 
@@ -361,7 +363,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                             let mut url_to_semaphore = url_to_semaphore.write().await;
                             url_to_semaphore.insert(
                                 flow.url.clone(),
-                                Arc::new(Semaphore::new(REQUESTS_PER_HOST)),
+                                Arc::new(Semaphore::new(requests_per_host.into())),
                             );
                         }
                         let semaphore: Arc<Semaphore>;
