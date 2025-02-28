@@ -333,7 +333,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
         for config_path in cmd_config.config_paths {
             let config: SanityCheckConfig =
-                serde_json::from_str(&fs::read_to_string(&config_path).await?)?;
+                serde_json::from_str(&tokio::fs::read_to_string(&config_path).await?)?;
 
             // Process requests inside config file concurrently
             for request_config in config.requests {
