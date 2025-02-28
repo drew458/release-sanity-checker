@@ -268,19 +268,16 @@ fn compare_arrays_order_independent(
         let count2 = hash_count2.get(hash).unwrap_or(&0);
         if count1 > count2 {
             // Find items that are in arr1 but not in arr2 (or fewer in arr2)
+            let diff_count = count1 - count2;
+            let mut reported = 0;
+            
             for item in arr1 {
-                if get_value_hash(item) == *hash {
+                if get_value_hash(item) == *hash && reported < diff_count {
                     differences.push(Difference::ArrayElementRemoved {
                         path: format!("{}[*]", path),
                         value: format_value(item, 50),
                     });
-
-                    // Only report the difference for the number of elements that are actually missing
-                    if count1 <= &(count2 + differences.iter().filter(|d| {
-                        matches!(d, Difference::ArrayElementRemoved { path: p, .. } if p == &format!("{}[*]", path))
-                    }).count()) {
-                        break;
-                    }
+                    reported += 1;
                 }
             }
         }
@@ -288,22 +285,19 @@ fn compare_arrays_order_independent(
 
     // Find elements added to arr2
     for (hash, count2) in &hash_count2 {
-        let count1 = hash_count1.get(hash).cloned().unwrap_or(0);
-        if count2 > &count1 {
+        let count1 = hash_count1.get(hash).unwrap_or(&0);
+        if count2 > count1 {
             // Find items that are in arr2 but not in arr1 (or fewer in arr1)
+            let diff_count = count2 - count1;
+            let mut reported = 0;
+            
             for item in arr2 {
-                if get_value_hash(item) == *hash {
+                if get_value_hash(item) == *hash && reported < diff_count {
                     differences.push(Difference::ArrayElementAdded {
                         path: format!("{}[*]", path),
                         value: format_value(item, 50),
                     });
-
-                    // Only report the difference for the number of elements that are actually added
-                    if count2 <= &(count1 + differences.iter().filter(|d| {
-                        matches!(d, Difference::ArrayElementAdded { path: p, .. } if p == &format!("{}[*]", path))
-                    }).count()) {
-                        break;
-                    }
+                    reported += 1;
                 }
             }
         }
@@ -313,15 +307,14 @@ fn compare_arrays_order_independent(
     // we still need to recurse into the values to find differences in nested structures
     let common_hashes: HashSet<_> = hash_count1
         .keys()
-        .collect::<HashSet<_>>()
-        .intersection(&hash_count2.keys().collect::<HashSet<_>>())
+        .filter(|k| hash_count1.get(*k) == hash_count2.get(*k))
         .cloned()
         .collect();
 
     for hash in common_hashes {
         // Find one representative element from each array with this hash
-        if let Some(val1_idx) = arr1.iter().position(|val| get_value_hash(val) == *hash) {
-            if let Some(val2_idx) = arr2.iter().position(|val| get_value_hash(val) == *hash) {
+        if let Some(val1_idx) = arr1.iter().position(|val| get_value_hash(val) == hash) {
+            if let Some(val2_idx) = arr2.iter().position(|val| get_value_hash(val) == hash) {
                 let val1 = &arr1[val1_idx];
                 let val2 = &arr2[val2_idx];
 
