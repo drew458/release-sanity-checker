@@ -2,7 +2,7 @@
 
 This tool helps you ensure the consistency of your API responses over time. It fetches responses for a set of pre-defined requests, compares them against previous responses stored in a database, and reports any differences.  This is particularly useful for regression testing and ensuring that API changes don't introduce unexpected behavior.
 
-## How to run
+## 🚀 How to run
 
 - **Download binary**  
 Download your preferred version from [releases](https://github.com/drew458/release-sanity-checker/releases) and just run `release-sanity-checker <FILENAME>`.
@@ -21,13 +21,13 @@ Assuming you have Podman or Docker installed on your machine:
       podman run -v "./examples/:/app/examples/" release-sanity-checker --directory ./examples
       ```
  
-## Usage
+## ▶️ Usage
 
 ```bash
 release-sanity-checker [options] <config_path>
 ```
 
-### Options
+### 🕹️ Options
 
     --file <config_path>: Run with a specific config file (default mode).
     --directory <dir_path>: Run with all config files found in the directory.
@@ -35,7 +35,7 @@ release-sanity-checker [options] <config_path>
     --baseline: Build the baseline for the requests. This will overwrite existing responses in the database with the current responses.
     --verbose: Print the full response body/header when changed and response that didn't change.
 
-### Examples
+### 🚦 Examples
 
 - **Build the baseline**
 
@@ -63,7 +63,7 @@ release-sanity-checker --directory examples
 release-sanity-checker --file config.json --ignore-headers
 ```
 
-## Configuration File Format
+## ✅ Configuration File Format
 
 **Requests object**
 
@@ -147,6 +147,6 @@ The configuration file is a JSON file containing an array of request definitions
 }
 ```
 
-## Database
+## 📊 Database
 
 The tool uses a SQLite database file named `release-sanity-checker-data.db` to store previous responses. This file is created in the current working directory along with the WAL files (`release-sanity-checker-data.db-shm` and `release-sanity-checker-data.db-wal`).
