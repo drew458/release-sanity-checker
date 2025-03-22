@@ -1,10 +1,11 @@
 mod diff_finder;
-mod print_actor;
+mod printer;
 
 use diff_finder::compute_differences;
 
+use clap::{Args, Parser};
 use log::debug;
-use print_actor::{DifferencesPrinter, DifferencesPrinterMessage};
+use printer::{DifferencesPrinter, DifferencesPrinterMessage};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -21,7 +22,6 @@ use std::{
     sync::{atomic::AtomicUsize, Arc},
     time::Duration,
 };
-use clap::{Args, Parser};
 use tokio::{
     fs,
     sync::{RwLock, Semaphore},
@@ -44,11 +44,33 @@ struct HttpResponseData {
 
 impl HttpResponseData {
     fn new(status_code: u16, headers: HashMap<String, String>, body: String) -> HttpResponseData {
+
+        let mut json_body = None;
+        // Check if the response is JSON
+        match headers.get("Content-Type") {
+            Some(content_type) => {
+                if content_type == "application/json" {
+                    json_body = serde_json::from_str(&body).ok()
+                }
+            }
+            _ => {
+                // Parse case-insensitive header key
+                match headers.get("content-type") {
+                    Some(content_type) => {
+                        if content_type == "application/json" {
+                            json_body = serde_json::from_str(&body).ok()
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
         HttpResponseData {
             status_code,
             headers,
             body: ParsedBody {
-                json: serde_json::from_str(&body).ok(),
+                json: json_body,
                 raw: body,
             },
         }
@@ -90,7 +112,7 @@ async fn fetch_response(
     headers: &HashMap<String, String>,
     body: &Value,
     client: &Client,
-    sempahore: &Semaphore,
+    semaphore: &Semaphore,
 ) -> Result<HttpResponseData, Box<dyn std::error::Error + Send + Sync>> {
     let request_builder = if body.is_null() {
         client.get(url)
@@ -111,7 +133,12 @@ async fn fetch_response(
         )
         .collect();
 
-    let _permit = sempahore.acquire().await?;
+    debug!("Acquiring semaphore for request to {}...", url);
+    let _permit = semaphore.acquire().await?;
+    debug!(
+            "Semaphore for request to {} acquired! Sending request...",
+            url
+        );
     let response = request_builder.headers(header_map).send().await?;
 
     Ok(HttpResponseData::new(
@@ -194,10 +221,10 @@ struct Options {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let requests_per_host: u16 = env::var("REQUESTS_PER_HOST")
+    let requests_per_host: usize = env::var("REQUESTS_PER_HOST")
         .unwrap_or(30.to_string())
         .parse()
-        .unwrap_or(30);
+        .expect("Invalid REQUESTS_PER_HOST env variable");
 
     env_logger::init();
 
@@ -211,11 +238,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             process::exit(1);
         }
 
-        let mut entries = fs::read_dir(&dir_path).await?;
+        let mut files = fs::read_dir(&dir_path).await?;
         let mut found_files = false;
 
-        while let Some(entry_result) = entries.next_entry().await? {
-            let path = entry_result.path();
+        while let Some(file) = files.next_entry().await? {
+            let path = file.path();
             if path.is_file() && path.extension().is_some_and(|ext| ext == "json") {
                 config_paths.push(path);
                 found_files = true;
@@ -223,7 +250,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         }
 
         if !found_files {
-            eprintln!("Warning: No JSON config files found in directory '{}'.", dir_path.display());
+            eprintln!(
+                "Warning: No JSON config files found in directory '{}'.",
+                dir_path.display()
+            );
         }
     } else {
         // Handle individual files
@@ -268,7 +298,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let http_client = reqwest::ClientBuilder::new()
         .connect_timeout(Duration::from_secs(10))
         .timeout(Duration::from_secs(10))
-        .pool_max_idle_per_host(requests_per_host.into())
+        .pool_max_idle_per_host(requests_per_host)
         .tcp_keepalive(Duration::from_secs(60))
         .build()?;
 
@@ -283,11 +313,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     {
         let (sender, receiver) = tokio::sync::mpsc::channel(100);
         let printer = DifferencesPrinter::new(receiver, done_tx);
-        tokio::task::spawn(print_actor::run_differences_printer(printer));
+        tokio::task::spawn(printer::run_differences_printer(printer));
 
         println!("Starting to process requests...\n");
 
         for config_path in config_paths {
+            debug!("Reading config path at {:#?}...", config_path);
             let config: SanityCheckConfig =
                 serde_json::from_str(&tokio::fs::read_to_string(&config_path).await?)?;
 
@@ -311,7 +342,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
                         let mut semaphore_exists_for_url = true;
                         {
-                            if url_to_semaphore.read().await.get(&flow.url).is_none() {
+                            let url_to_semaphore = url_to_semaphore.read().await;
+                            if url_to_semaphore.get(&flow.url).is_none() {
                                 semaphore_exists_for_url = false;
                             }
                         }
@@ -319,17 +351,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                             let mut url_to_semaphore = url_to_semaphore.write().await;
                             url_to_semaphore.insert(
                                 flow.url.clone(),
-                                Arc::new(Semaphore::new(requests_per_host.into())),
+                                Arc::new(Semaphore::new(requests_per_host)),
                             );
                         }
                         let semaphore: Arc<Semaphore>;
                         {
-                            let binding = url_to_semaphore.read().await;
-                            semaphore = binding.get(&flow.url).cloned().unwrap();
+                            let url_to_semaphore = url_to_semaphore.read().await;
+                            semaphore = url_to_semaphore.get(&flow.url).cloned().unwrap();
                         }
 
                         let mut retries: i8 = 3;
-                        let mut current_response = Option::None;
+                        let mut current_response = None;
                         while retries > 0 {
                             debug!("Sending request {} to {}", request_config.id, flow.url);
 
@@ -343,6 +375,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                             .await {
                                 Ok(res) => {
                                     if res.status_code >= 500 {
+                                        debug!("Request to url {} has errors (status code: {})", flow.url, res.status_code);
                                         retries -= 1;
                                     } else {
                                         current_response = Some(res);
@@ -365,40 +398,40 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
                         let current_response = current_response.expect("Response cannot be None!");
 
-                        // Try to find a previous response for that request (identified by id and URL)
-                        let prev_response = find_previous_response(
-                            &request_config.id,
-                            &flow.url,
-                            cli.options.ignore_headers,
-                            db.as_ref(),
-                        )
-                        .await?;
-
                         // If it's the last request of the flow, run the check on the response
-                        if i == request_config.flow.len() - 1 {
-                            if !cli.options.baseline {
-                                if let Some(prev_response) = prev_response {
-                                    let differences = compute_differences(
-                                        &prev_response,
-                                        &current_response,
-                                        cli.options.ignore_headers,
-                                        request_config.ignore_paths.as_ref(),
-                                    );
+                        if i == request_config.flow.len() - 1 && (!cli.options.baseline) {
+                                
+                            // Try to find a previous response for that request (identified by id and URL)
+                            let prev_response = find_previous_response(
+                                &request_config.id,
+                                &flow.url,
+                                cli.options.ignore_headers,
+                                db.as_ref(),
+                            )
+                            .await?;
+                            
+                            if let Some(prev_response) = prev_response {
+                                let differences = compute_differences(
+                                    &prev_response,
+                                    &current_response,
+                                    cli.options.ignore_headers,
+                                    request_config.ignore_paths.as_ref(),
+                                );
 
-                                    if differences.is_empty() {
-                                        if cli.options.verbose {
-                                            println!(
-                                                "\n✅ Request '{}' of URL '{}' has not changed. ✅",
-                                                request_config.id, flow.url
-                                            );
-                                        }
-                                    } else {
-                                        changed_requests_counter
-                                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                                        print_sender.send(DifferencesPrinterMessage::PrintDifferences {
-                                            differences, request_id: request_config.id.clone(), url: flow.url.clone()
-                                        }).await?
+                                if differences.is_empty() {
+                                    if cli.options.verbose {
+                                        println!(
+                                            "\n✅ Request '{}' of URL '{}' has not changed. ✅",
+                                            request_config.id, flow.url
+                                        );
                                     }
+                                } else {
+                                    changed_requests_counter
+                                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                    
+                                    print_sender.send(DifferencesPrinterMessage::PrintDifferences {
+                                        differences, request_id: request_config.id.clone(), url: flow.url.clone()
+                                    }).await?
                                 }
                             }
 

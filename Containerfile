@@ -6,7 +6,6 @@
     COPY Cargo.toml Cargo.lock* ./
     COPY src ./src/
     
-    # Download and cache dependencies (this step speeds up rebuilds)
     RUN cargo fetch --locked
     RUN cargo build --release
 
