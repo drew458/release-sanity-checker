@@ -21,6 +21,7 @@ use std::{
     sync::{atomic::AtomicUsize, Arc},
     time::Duration,
 };
+use clap::{Args, Parser};
 use tokio::{
     fs,
     sync::{RwLock, Semaphore},
@@ -82,14 +83,6 @@ struct RequestFlowConfig {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 struct SanityCheckConfig {
     requests: Vec<RequestFlowConfig>,
-}
-
-#[derive(Default)]
-struct CmdConfig {
-    config_paths: Vec<PathBuf>,
-    headers_ignored: bool,
-    baseline_mode: bool,
-    verbose: bool,
 }
 
 async fn fetch_response(
@@ -174,97 +167,29 @@ async fn find_previous_response(
     }
 }
 
-async fn process_args(
-    args: Vec<String>,
-) -> Result<CmdConfig, Box<dyn std::error::Error + Send + Sync>> {
-    let program_name = &args[0];
+#[derive(Parser, Debug)]
+#[command(author, version, about, long_about = None)]
+struct Cli {
+    #[arg(value_name = "FILE")]
+    files: Vec<PathBuf>,
 
-    if args.len() > 1 && args[1] == "--help" {
-        print_usage(program_name);
-        process::exit(0);
-    }
+    #[command(flatten)]
+    options: Options,
+}
 
-    let mut config_paths: Vec<PathBuf> = Vec::new();
-    let mut mode_file = true; // Default mode is --file
-    let mut headers_ignored = false;
-    let mut baseline_mode = false;
-    let mut verbose = false;
+#[derive(Args, Debug)]
+struct Options {
+    #[arg(long, value_name = "DIRECTORY", conflicts_with = "files")]
+    directory: Option<PathBuf>,
 
-    let mut arg_iter = args.iter().skip(1);
+    #[arg(long)]
+    ignore_headers: bool,
 
-    while let Some(arg) = arg_iter.next() {
-        match arg.as_str() {
-            "--file" => {
-                mode_file = true;
-                if let Some(path_str) = arg_iter.next() {
-                    config_paths.push(PathBuf::from(path_str));
-                } else {
-                    eprintln!("Error: Missing path for --file option.");
-                    process::exit(1);
-                }
-            }
-            "--directory" => {
-                mode_file = false;
-                if let Some(dir_path_str) = arg_iter.next() {
-                    let dir_path = PathBuf::from(dir_path_str);
-                    if dir_path.is_dir() {
-                        let mut entries = fs::read_dir(dir_path).await?;
+    #[arg(long)]
+    baseline: bool,
 
-                        while let Some(entry_result) = entries.next_entry().await? {
-                            let path = entry_result.path();
-                            if path.is_file() && path.extension().is_some_and(|ext| ext == "json") {
-                                config_paths.push(path);
-                            }
-                        }
-
-                        if config_paths.is_empty() {
-                            eprintln!(
-                                "Warning: No JSON config files found in directory '{}'.",
-                                dir_path_str
-                            );
-                        }
-                    } else {
-                        eprintln!(
-                            "Error: Directory path '{}' is not a valid directory.",
-                            dir_path_str
-                        );
-                        process::exit(1);
-                    }
-                } else {
-                    eprintln!("Error: Missing directory path for --directory option.");
-                    process::exit(1);
-                }
-            }
-            "--ignore-headers" => {
-                headers_ignored = true;
-            }
-            "--baseline" => {
-                baseline_mode = true;
-            }
-            "--verbose" => verbose = true,
-            config_path if mode_file => {
-                // Default to file mode if no flag and it's the first non-flag arg
-                config_paths.push(PathBuf::from(config_path));
-                mode_file = false; // Ensure subsequent args are not treated as file paths in default mode
-            }
-            _ => {
-                eprintln!("Error: Unknown option '{}'.", arg);
-                process::exit(1);
-            }
-        }
-    }
-
-    if config_paths.is_empty() {
-        eprintln!("Error: No config file or directory specified.");
-        process::exit(1);
-    }
-
-    Ok(CmdConfig {
-        config_paths,
-        headers_ignored,
-        baseline_mode,
-        verbose,
-    })
+    #[arg(long)]
+    verbose: bool,
 }
 
 #[tokio::main]
@@ -276,8 +201,39 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     env_logger::init();
 
-    let args: Vec<String> = env::args().collect();
-    let cmd_config = process_args(args).await?;
+    let cli = Cli::parse();
+    let mut config_paths: Vec<PathBuf> = Vec::new();
+
+    // Handle directory option
+    if let Some(dir_path) = cli.options.directory {
+        if !dir_path.is_dir() {
+            eprintln!("Error: '{}' is not a valid directory.", dir_path.display());
+            process::exit(1);
+        }
+
+        let mut entries = fs::read_dir(&dir_path).await?;
+        let mut found_files = false;
+
+        while let Some(entry_result) = entries.next_entry().await? {
+            let path = entry_result.path();
+            if path.is_file() && path.extension().is_some_and(|ext| ext == "json") {
+                config_paths.push(path);
+                found_files = true;
+            }
+        }
+
+        if !found_files {
+            eprintln!("Warning: No JSON config files found in directory '{}'.", dir_path.display());
+        }
+    } else {
+        // Handle individual files
+        config_paths = cli.files;
+    }
+
+    if config_paths.is_empty() {
+        eprintln!("Error: No config file or directory specified.");
+        process::exit(1);
+    }
 
     let db = Arc::new(
         SqlitePoolOptions::new()
@@ -331,7 +287,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
         println!("Starting to process requests...\n");
 
-        for config_path in cmd_config.config_paths {
+        for config_path in config_paths {
             let config: SanityCheckConfig =
                 serde_json::from_str(&tokio::fs::read_to_string(&config_path).await?)?;
 
@@ -413,24 +369,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                         let prev_response = find_previous_response(
                             &request_config.id,
                             &flow.url,
-                            cmd_config.headers_ignored,
+                            cli.options.ignore_headers,
                             db.as_ref(),
                         )
                         .await?;
 
                         // If it's the last request of the flow, run the check on the response
                         if i == request_config.flow.len() - 1 {
-                            if !cmd_config.baseline_mode {
+                            if !cli.options.baseline {
                                 if let Some(prev_response) = prev_response {
                                     let differences = compute_differences(
                                         &prev_response,
                                         &current_response,
-                                        cmd_config.headers_ignored,
+                                        cli.options.ignore_headers,
                                         request_config.ignore_paths.as_ref(),
                                     );
 
                                     if differences.is_empty() {
-                                        if cmd_config.verbose {
+                                        if cli.options.verbose {
                                             println!(
                                                 "\n✅ Request '{}' of URL '{}' has not changed. ✅",
                                                 request_config.id, flow.url
@@ -446,7 +402,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                 }
                             }
 
-                            let query_str = if cmd_config.baseline_mode {
+                            let query_str = if cli.options.baseline {
                                 "INSERT INTO response (request_id, url, baseline_status_code, baseline_body, baseline_headers)
                                     VALUES (?, ?, ?, ?, ?)
                                     ON CONFLICT (request_id, url) DO UPDATE SET baseline_status_code = excluded.baseline_status_code,
@@ -492,7 +448,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let _ = done_rx.await; // Wait for print_actor to confirm it's done
 
-    if cmd_config.baseline_mode {
+    if cli.options.baseline {
         println!(
             "\nBaseline built successfully. Processed {} requests, errors: {}",
             requests_counter.load(std::sync::atomic::Ordering::Relaxed),
@@ -508,29 +464,4 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     }
 
     Ok(())
-}
-
-fn print_usage(program_name: &str) {
-    println!("Usage: {program_name} [options] <config_path>");
-    println!();
-    println!("Options:");
-    println!("  --file <config_path>          Run with a specific config file (default mode).");
-    println!("  --directory <dir_path>        Run with all config files found in the directory.");
-    println!("  --ignore-headers              Do not look for changes in response headers.");
-    println!("  --baseline                    Build the baseline for the requests.");
-    println!("  --verbose                     Print the full response body/header when changed and response that didn't change.");
-    println!();
-    println!("Examples:");
-    println!(
-        "  {} config.json              (Default: Run with config.json)",
-        program_name
-    );
-    println!(
-        "  {} --file config.json      Run with config.json",
-        program_name
-    );
-    println!(
-        "  {} --directory examples    Run with all .json files in the 'examples' directory",
-        program_name
-    );
 }
