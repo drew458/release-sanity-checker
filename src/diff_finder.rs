@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use colored::Colorize;
 use serde_json::Value;
@@ -6,7 +6,7 @@ use serde_json::Value;
 use crate::HttpResponseData;
 
 /// Represents a difference found in JSON structures
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum Difference {
     StatusCodeChanged {
         old_val: u16,
@@ -114,10 +114,13 @@ impl Difference {
             }
             Difference::DifferentBodyString { before, after } => {
                 println!("\n  Body (non-JSON or invalid JSON):");
-                let body1_preview = format!("{}...", &before[..100]);
-                let body2_preview = format!("{}...", &after[..100]);
-                println!("    - {}", body1_preview.green());
-                println!("    + {}", body2_preview.red());
+
+                if !before.is_empty() && !after.is_empty() {
+                    let body1_preview = format!("{}...", &before[..100]);
+                    let body2_preview = format!("{}...", &after[..100]);
+                    println!("    - {}", body1_preview.green());
+                    println!("    + {}", body2_preview.red());
+                }
             }
         }
     }
@@ -207,29 +210,6 @@ fn compare_objects(
     }
 }
 
-/// Calculate a hash representation of a JSON value for comparing array elements
-fn get_value_hash(value: &Value) -> String {
-    match value {
-        Value::Object(map) => {
-            let mut sorted_keys: Vec<&String> = map.keys().collect();
-            sorted_keys.sort();
-
-            let mut hash_parts = Vec::new();
-            for key in sorted_keys {
-                let key_hash = format!("{}:{}", key, get_value_hash(&map[key]));
-                hash_parts.push(key_hash);
-            }
-            format!("{{{}}}", hash_parts.join(","))
-        }
-        Value::Array(arr) => {
-            let mut hash_parts: Vec<String> = arr.iter().map(get_value_hash).collect();
-            hash_parts.sort(); // Sort to ensure order-independent comparison
-            format!("[{}]", hash_parts.join(","))
-        }
-        _ => value.to_string(),
-    }
-}
-
 fn compare_arrays_order_independent(
     path: &str,
     arr1: &[Value],
@@ -247,93 +227,70 @@ fn compare_arrays_order_independent(
         });
     }
 
-    // Create a map of value hashes to count for each array
-    let mut hash_count1: HashMap<String, usize> = HashMap::new();
-    let mut hash_count2: HashMap<String, usize> = HashMap::new();
+    let set1: HashSet<&Value> = arr1.iter().collect();
+    let set2: HashSet<&Value> = arr2.iter().collect();
 
-    // Count occurrences in first array
-    for value in arr1 {
-        let hash = get_value_hash(value);
-        *hash_count1.entry(hash).or_insert(0) += 1;
+    let removed_elements = set1.difference(&set2);
+    for removed_value in removed_elements {
+        differences.push(Difference::ArrayElementRemoved {
+            path: format!("{}[*]", path),
+            value: format_value(removed_value, 50),
+        });
     }
 
-    // Count occurrences in second array
-    for value in arr2 {
-        let hash = get_value_hash(value);
-        *hash_count2.entry(hash).or_insert(0) += 1;
+    let added_elements = set2.difference(&set1);
+    for added_value in added_elements {
+        differences.push(Difference::ArrayElementAdded {
+            path: format!("{}[*]", path),
+            value: format_value(added_value, 50),
+        });
     }
 
-    // Find elements removed from arr1
-    for (hash, count1) in &hash_count1 {
-        let count2 = hash_count2.get(hash).unwrap_or(&0);
-        if count1 > count2 {
-            // Find items that are in arr1 but not in arr2 (or fewer in arr2)
-            let diff_count = count1 - count2;
-            let mut reported = 0;
-            
-            for item in arr1 {
-                if get_value_hash(item) == *hash && reported < diff_count {
-                    differences.push(Difference::ArrayElementRemoved {
-                        path: format!("{}[*]", path),
-                        value: format_value(item, 50),
-                    });
-                    reported += 1;
+    let common_elements = set1.intersection(&set2);
+    for common_value in common_elements {
+        // Find indices of common values in both arrays (needed for recursion)
+        let indices1: Vec<usize> = arr1
+            .iter()
+            .enumerate()
+            .filter_map(|(index, val)| {
+                if val == *common_value {
+                    Some(index)
+                } else {
+                    None
                 }
-            }
-        }
-    }
-
-    // Find elements added to arr2
-    for (hash, count2) in &hash_count2 {
-        let count1 = hash_count1.get(hash).unwrap_or(&0);
-        if count2 > count1 {
-            // Find items that are in arr2 but not in arr1 (or fewer in arr1)
-            let diff_count = count2 - count1;
-            let mut reported = 0;
-            
-            for item in arr2 {
-                if get_value_hash(item) == *hash && reported < diff_count {
-                    differences.push(Difference::ArrayElementAdded {
-                        path: format!("{}[*]", path),
-                        value: format_value(item, 50),
-                    });
-                    reported += 1;
+            })
+            .collect();
+        let indices2: Vec<usize> = arr2
+            .iter()
+            .enumerate()
+            .filter_map(|(index, val)| {
+                if val == *common_value {
+                    Some(index)
+                } else {
+                    None
                 }
-            }
-        }
-    }
+            })
+            .collect();
 
-    // For each matching hash (same element appears in both arrays)
-    // we still need to recurse into the values to find differences in nested structures
-    let common_hashes: HashSet<_> = hash_count1
-        .keys()
-        .filter(|k| hash_count1.get(*k) == hash_count2.get(*k))
-        .cloned()
-        .collect();
+        // Assuming there can be multiple identical values, to avoid re-comparing the same elements, just compare the first occurrences
+        if let (Some(&index1), Some(&index2)) = (indices1.first(), indices2.first()) {
+            let val1 = &arr1[index1];
+            let val2 = &arr2[index2];
 
-    for hash in common_hashes {
-        // Find one representative element from each array with this hash
-        if let Some(val1_idx) = arr1.iter().position(|val| get_value_hash(val) == hash) {
-            if let Some(val2_idx) = arr2.iter().position(|val| get_value_hash(val) == hash) {
-                let val1 = &arr1[val1_idx];
-                let val2 = &arr2[val2_idx];
-
-                // Only recurse into objects and arrays - primitives will have identical hashes if they match
-                match (val1, val2) {
-                    (Value::Object(_), Value::Object(_)) | (Value::Array(_), Value::Array(_)) => {
-                        let new_path = format!("{}[*]", path); // Use [*] to indicate order-independent position
-                        find_json_differences(
-                            &new_path,
-                            val1,
-                            val2,
-                            differences,
-                            max_depth,
-                            current_depth + 1,
-                            ignored_paths,
-                        );
-                    }
-                    _ => {} // Primitives with same hash are identical
+            match (val1, val2) {
+                (Value::Object(_), Value::Object(_)) | (Value::Array(_), Value::Array(_)) => {
+                    let new_path = format!("{}[*]", path); // Use [*] to indicate order-independent position
+                    find_json_differences(
+                        &new_path,
+                        val1,
+                        val2,
+                        differences,
+                        max_depth,
+                        current_depth + 1,
+                        ignored_paths,
+                    );
                 }
+                _ => {} // Primitives are already compared by set difference
             }
         }
     }
@@ -352,19 +309,19 @@ pub fn find_json_differences(
         return;
     }
 
-    let current_pointer = format!("/{}", path);
+    let current_path = format!("/{}", path);
     if let Some(ignored_paths) = ignored_paths {
         for ignored_path in ignored_paths.iter() {
             // Normalize the ignored path by removing trailing slash (if any)
-            let normalized_ignore = if ignored_path.ends_with('/') && ignored_path.len() > 1 {
+            let ignored_path = if ignored_path.ends_with('/') && ignored_path.len() > 1 {
                 ignored_path.trim_end_matches('/')
             } else {
                 ignored_path.as_str()
             };
             // If the current pointer exactly matches the ignore path
             // or is a sub-path of the ignore path, skip diffing.
-            if current_pointer == normalized_ignore
-                || current_pointer.starts_with(&format!("{}{}", normalized_ignore, "/"))
+            if current_path == ignored_path
+                || current_path.starts_with(&format!("{}{}", ignored_path, "/"))
             {
                 return;
             }
@@ -384,7 +341,6 @@ pub fn find_json_differences(
             );
         }
         (Value::Array(arr1), Value::Array(arr2)) => {
-            // Use order-independent comparison for arrays
             compare_arrays_order_independent(
                 path,
                 arr1,
@@ -395,6 +351,7 @@ pub fn find_json_differences(
                 ignored_paths,
             );
         }
+        // If the current values are either a Number, String, Boolean, Null, just perform a simple comparison
         (v1, v2) if v1 != v2 => {
             differences.push(Difference::BodyValueChanged {
                 path: path.to_string(),
@@ -466,7 +423,6 @@ pub fn compute_differences(
     }
 
     match (&response1.body.json, &response2.body.json) {
-        // JSON body
         (Some(body1), Some(body2)) => {
             find_json_differences("", body1, body2, &mut differences, 10, 0, &ignored_paths);
         }

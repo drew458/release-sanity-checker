@@ -44,25 +44,16 @@ struct HttpResponseData {
 
 impl HttpResponseData {
     fn new(status_code: u16, headers: HashMap<String, String>, body: String) -> HttpResponseData {
-
         let mut json_body = None;
+
         // Check if the response is JSON
-        match headers.get("Content-Type") {
-            Some(content_type) => {
-                if content_type == "application/json" {
-                    json_body = serde_json::from_str(&body).ok()
-                }
+        if let Some(content_type) = headers.get("Content-Type") {
+            if content_type.starts_with("application/json") {
+                json_body = serde_json::from_str(&body).ok()
             }
-            _ => {
-                // Parse case-insensitive header key
-                match headers.get("content-type") {
-                    Some(content_type) => {
-                        if content_type == "application/json" {
-                            json_body = serde_json::from_str(&body).ok()
-                        }
-                    }
-                    _ => {}
-                }
+        } else if let Some(content_type) = headers.get("content-type") {
+            if content_type.starts_with("application/json") {
+                json_body = serde_json::from_str(&body).ok()
             }
         }
 
@@ -136,9 +127,9 @@ async fn fetch_response(
     debug!("Acquiring semaphore for request to {}...", url);
     let _permit = semaphore.acquire().await?;
     debug!(
-            "Semaphore for request to {} acquired! Sending request...",
-            url
-        );
+        "Semaphore for request to {} acquired! Sending request...",
+        url
+    );
     let response = request_builder.headers(header_map).send().await?;
 
     Ok(HttpResponseData::new(
@@ -399,39 +390,40 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                         let current_response = current_response.expect("Response cannot be None!");
 
                         // If it's the last request of the flow, run the check on the response
-                        if i == request_config.flow.len() - 1 && (!cli.options.baseline) {
-                                
-                            // Try to find a previous response for that request (identified by id and URL)
-                            let prev_response = find_previous_response(
-                                &request_config.id,
-                                &flow.url,
-                                cli.options.ignore_headers,
-                                db.as_ref(),
-                            )
-                            .await?;
-                            
-                            if let Some(prev_response) = prev_response {
-                                let differences = compute_differences(
-                                    &prev_response,
-                                    &current_response,
+                        if i == request_config.flow.len() - 1 {
+                            if !cli.options.baseline {
+                                // Try to find a previous response for that request (identified by id and URL)
+                                let prev_response = find_previous_response(
+                                    &request_config.id,
+                                    &flow.url,
                                     cli.options.ignore_headers,
-                                    request_config.ignore_paths.as_ref(),
-                                );
+                                    db.as_ref(),
+                                )
+                                    .await?;
 
-                                if differences.is_empty() {
-                                    if cli.options.verbose {
-                                        println!(
-                                            "\n✅ Request '{}' of URL '{}' has not changed. ✅",
-                                            request_config.id, flow.url
-                                        );
+                                if let Some(prev_response) = prev_response {
+                                    let differences = compute_differences(
+                                        &prev_response,
+                                        &current_response,
+                                        cli.options.ignore_headers,
+                                        request_config.ignore_paths.as_ref(),
+                                    );
+
+                                    if differences.is_empty() {
+                                        if cli.options.verbose {
+                                            println!(
+                                                "\n✅ Request '{}' of URL '{}' has not changed. ✅",
+                                                request_config.id, flow.url
+                                            );
+                                        }
+                                    } else {
+                                        changed_requests_counter
+                                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
+                                        print_sender.send(DifferencesPrinterMessage::PrintDifferences {
+                                            differences, request_id: request_config.id.clone(), url: flow.url.clone()
+                                        }).await?
                                     }
-                                } else {
-                                    changed_requests_counter
-                                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                                    
-                                    print_sender.send(DifferencesPrinterMessage::PrintDifferences {
-                                        differences, request_id: request_config.id.clone(), url: flow.url.clone()
-                                    }).await?
                                 }
                             }
 
