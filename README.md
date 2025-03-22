@@ -1,4 +1,4 @@
-# Release Sanity Checker
+# Release Sanity Checker ⚠️🤖🦾
 
 This tool helps you ensure the consistency of your API responses over time. It fetches responses for a set of pre-defined requests, compares them against previous responses stored in a database, and reports any differences.  This is particularly useful for regression testing and ensuring that API changes don't introduce unexpected behavior.
 
