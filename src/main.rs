@@ -1,8 +1,7 @@
 mod diff_finder;
 mod printer;
 
-use diff_finder::compute_differences;
-
+use crate::diff_finder::compute_differences;
 use clap::{Args, Parser};
 use log::debug;
 use printer::{DifferencesPrinter, DifferencesPrinterMessage};
@@ -10,8 +9,8 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sqlx::{
-    sqlite::{SqliteConnectOptions, SqlitePoolOptions},
     Pool, Row, Sqlite,
+    sqlite::{SqliteConnectOptions, SqlitePoolOptions},
 };
 use std::{
     collections::{HashMap, HashSet},
@@ -19,7 +18,7 @@ use std::{
     path::PathBuf,
     process,
     str::FromStr,
-    sync::{atomic::AtomicUsize, Arc},
+    sync::{Arc, atomic::AtomicUsize},
     time::Duration,
 };
 use tokio::{

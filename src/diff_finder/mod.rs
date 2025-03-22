@@ -1,3 +1,5 @@
+mod tests;
+
 use std::collections::HashSet;
 
 use colored::Colorize;
@@ -395,11 +397,11 @@ pub fn compute_differences(
                                 header_name: key.to_string(),
                                 old_val: value1
                                     .chars()
-                                    .take(min_len.min(diff_preview_len))
+                                    .take(min_len.min(diff_preview_len) + 1)
                                     .collect::<String>(),
                                 new_val: value2
                                     .chars()
-                                    .take(min_len.min(diff_preview_len))
+                                    .take(min_len.min(diff_preview_len) + 1)
                                     .collect::<String>(),
                             });
                         }

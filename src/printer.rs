@@ -1,7 +1,6 @@
+use crate::diff_finder::Difference;
 use colored::Colorize;
 use tokio::sync::mpsc;
-
-use crate::diff_finder::Difference;
 
 pub struct DifferencesPrinter {
     receiver: mpsc::Receiver<DifferencesPrinterMessage>,
