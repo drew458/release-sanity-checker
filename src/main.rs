@@ -12,6 +12,7 @@ use sqlx::{
     Pool, Row, Sqlite,
     sqlite::{SqliteConnectOptions, SqlitePoolOptions},
 };
+use std::cmp::max;
 use std::{
     collections::{HashMap, HashSet},
     env::{self},
@@ -46,14 +47,15 @@ impl HttpResponseData {
         let mut json_body = None;
 
         // Check if the response is JSON
-        if let Some(content_type) = headers.get("Content-Type") {
-            if content_type.starts_with("application/json") {
-                json_body = serde_json::from_str(&body).ok()
+        match (headers.get("Content-Type"), headers.get("content-type")) {
+            (Some(content_type), Some(_))
+            | (Some(content_type), None)
+            | (None, Some(content_type)) => {
+                if content_type.starts_with("application/json") {
+                    json_body = serde_json::from_str(&body).ok()
+                }
             }
-        } else if let Some(content_type) = headers.get("content-type") {
-            if content_type.starts_with("application/json") {
-                json_body = serde_json::from_str(&body).ok()
-            }
+            _ => {}
         }
 
         HttpResponseData {
@@ -211,12 +213,19 @@ struct Options {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    env_logger::init();
+
     let requests_per_host: usize = env::var("REQUESTS_PER_HOST")
         .unwrap_or(30.to_string())
         .parse()
         .expect("Invalid REQUESTS_PER_HOST env variable");
-
-    env_logger::init();
+    let max_retries: u16 = max(
+        1,
+        env::var("MAX_RETRIES")
+            .unwrap_or(3.to_string())
+            .parse()
+            .expect("Invalid MAX_RETRIES env variable"),
+    );
 
     let cli = Cli::parse();
     let mut config_paths: Vec<PathBuf> = Vec::new();
@@ -350,7 +359,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                             semaphore = url_to_semaphore.get(&flow.url).cloned().unwrap();
                         }
 
-                        let mut retries: i8 = 3;
+                        let mut retries = max_retries.clone();
                         let mut current_response = None;
                         while retries > 0 {
                             debug!("Sending request {} to {}", request_config.id, flow.url);
