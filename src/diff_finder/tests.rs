@@ -5,6 +5,17 @@ mod tests {
     use serde_json::json;
     use std::collections::{HashMap, HashSet};
 
+    fn make_json_response(status_code: u16, json: serde_json::Value) -> HttpResponseData {
+        HttpResponseData {
+            status_code,
+            headers: HashMap::from([("Content-Type".into(), "application/json".into())]),
+            body: ParsedBody {
+                json: Some(json),
+                ..Default::default()
+            },
+        }
+    }
+
     #[test]
     fn test_status_code_difference() {
         let response1 = HttpResponseData {
@@ -141,23 +152,8 @@ mod tests {
 
     #[test]
     fn test_json_body_value_changed() {
-        let response1 = HttpResponseData {
-            status_code: 200,
-            headers: HashMap::new(),
-            body: ParsedBody {
-                raw: r#"{"name":"John","age":30}"#.to_string(),
-                json: Some(json!({"name": "John", "age": 30})),
-            },
-        };
-
-        let response2 = HttpResponseData {
-            status_code: 200,
-            headers: HashMap::new(),
-            body: ParsedBody {
-                raw: r#"{"name":"John","age":31}"#.to_string(),
-                json: Some(json!({"name": "John", "age": 31})),
-            },
-        };
+        let response1 = make_json_response(200, json!({"name": "John", "age": 30}));
+        let response2 = make_json_response(200, json!({"name": "John", "age": 31}));
 
         let differences = compute_differences(&response1, &response2, false, None);
 
@@ -185,23 +181,9 @@ mod tests {
 
     #[test]
     fn test_json_body_value_added_removed() {
-        let response1 = HttpResponseData {
-            status_code: 200,
-            headers: HashMap::new(),
-            body: ParsedBody {
-                raw: r#"{"name":"John","email":"john@example.com"}"#.to_string(),
-                json: Some(json!({"name": "John", "email": "john@example.com"})),
-            },
-        };
-
-        let response2 = HttpResponseData {
-            status_code: 200,
-            headers: HashMap::new(),
-            body: ParsedBody {
-                raw: r#"{"name":"John","phone":"555-1234"}"#.to_string(),
-                json: Some(json!({"name": "John", "phone": "555-1234"})),
-            },
-        };
+        let response1 =
+            make_json_response(200, json!({"name": "John", "email": "john@example.com"}));
+        let response2 = make_json_response(200, json!({"name": "John", "phone": "555-1234"}));
 
         let differences = compute_differences(&response1, &response2, false, None);
 
@@ -232,23 +214,14 @@ mod tests {
 
     #[test]
     fn test_nested_json_differences() {
-        let response1 = HttpResponseData {
-            status_code: 200,
-            headers: HashMap::new(),
-            body: ParsedBody {
-                raw: r#"{"user":{"name":"John","details":{"age":30}}}"#.to_string(),
-                json: Some(json!({"user": {"name": "John", "details": {"age": 30}}})),
-            },
-        };
-
-        let response2 = HttpResponseData {
-            status_code: 200,
-            headers: HashMap::new(),
-            body: ParsedBody {
-                raw: r#"{"user":{"name":"John","details":{"age":31}}}"#.to_string(),
-                json: Some(json!({"user": {"name": "John", "details": {"age": 31}}})),
-            },
-        };
+        let response1 = make_json_response(
+            200,
+            json!({"user": {"name": "John", "details": {"age": 30}}}),
+        );
+        let response2 = make_json_response(
+            200,
+            json!({"user": {"name": "John", "details": {"age": 31}}}),
+        );
 
         let differences = compute_differences(&response1, &response2, false, None);
 
@@ -270,23 +243,8 @@ mod tests {
 
     #[test]
     fn test_array_length_changed() {
-        let response1 = HttpResponseData {
-            status_code: 200,
-            headers: HashMap::new(),
-            body: ParsedBody {
-                raw: r#"{"items":[1,2,3]}"#.to_string(),
-                json: Some(json!({"items": [1, 2, 3]})),
-            },
-        };
-
-        let response2 = HttpResponseData {
-            status_code: 200,
-            headers: HashMap::new(),
-            body: ParsedBody {
-                raw: r#"{"items":[1,2,3,4,5]}"#.to_string(),
-                json: Some(json!({"items": [1, 2, 3, 4, 5]})),
-            },
-        };
+        let response1 = make_json_response(200, json!({"items": [1, 2, 3]}));
+        let response2 = make_json_response(200, json!({"items": [1, 2, 3, 4, 5]}));
 
         let differences = compute_differences(&response1, &response2, false, None);
 
@@ -329,27 +287,14 @@ mod tests {
 
     #[test]
     fn test_array_element_changed() {
-        let response1 = HttpResponseData {
-            status_code: 200,
-            headers: HashMap::new(),
-            body: ParsedBody {
-                raw: r#"{"users":[{"id":1,"name":"Alice"},{"id":2,"name":"Bob"}]}"#.to_string(),
-                json: Some(
-                    json!({"users": [{"id": 1, "name": "Alice"}, {"id": 2, "name": "Bob"}]}),
-                ),
-            },
-        };
-
-        let response2 = HttpResponseData {
-            status_code: 200,
-            headers: HashMap::new(),
-            body: ParsedBody {
-                raw: r#"{"users":[{"id":1,"name":"Alice"},{"id":2,"name":"Bobby"}]}"#.to_string(),
-                json: Some(
-                    json!({"users": [{"id": 1, "name": "Alice"}, {"id": 2, "name": "Bobby"}]}),
-                ),
-            },
-        };
+        let response1 = make_json_response(
+            200,
+            json!({"users": [{"id": 1, "name": "Alice"}, {"id": 2, "name": "Bob"}]}),
+        );
+        let response2 = make_json_response(
+            200,
+            json!({"users": [{"id": 1, "name": "Alice"}, {"id": 2, "name": "Bobby"}]}),
+        );
 
         let differences = compute_differences(&response1, &response2, false, None);
 
@@ -384,62 +329,53 @@ mod tests {
 
     #[test]
     fn test_array_order_changed() {
-        let response1 = HttpResponseData {
-            status_code: 200,
-            headers: HashMap::new(),
-            body: ParsedBody {
-                raw: r#"{ "myKey1": "FooBar", "myKey2": [ { "nestedKey31": "nestedVal31", "nestedKey32": false, "nestedKey33": 6 }, { "nestedKey11": "nestedVal11", "nestedKey12": false, "nestedKey13": 4 }, { "nestedKey21": "nestedVal21", "nestedKey22": false, "nestedKey23": 5 } ] }"#.to_string(),
-                json: Some(json!({
-                    "myKey1": "FooBar",
-                    "myKey2": [
-                        {
-                            "nestedKey31": "nestedVal31",
-                            "nestedKey32": false,
-                            "nestedKey33": 6
-                        },
-                        {
-                            "nestedKey11": "nestedVal11",
-                            "nestedKey12": false,
-                            "nestedKey13": 4
-                        },
-                        {
-                            "nestedKey21": "nestedVal21",
-                            "nestedKey22": false,
-                            "nestedKey23": 5
-                        }
-                    ]
-                })),
-            },
-        };
+        let response1 = make_json_response(
+            200,
+            json!({
+                "myKey1": "FooBar",
+                "myKey2": [
+                    {
+                        "nestedKey31": "nestedVal31",
+                        "nestedKey32": false,
+                        "nestedKey33": 6
+                    },
+                    {
+                        "nestedKey11": "nestedVal11",
+                        "nestedKey12": false,
+                        "nestedKey13": 4
+                    },
+                    {
+                        "nestedKey21": "nestedVal21",
+                        "nestedKey22": false,
+                        "nestedKey23": 5
+                    }
+                ]
+            }),
+        );
 
-        let response2 = HttpResponseData {
-            status_code: 200,
-            headers: HashMap::new(),
-            body: ParsedBody {
-                raw: r#"{ "myKey2": [ { "nestedKey11": "nestedVal11", "nestedKey12": false, "nestedKey13": 4 }, { "nestedKey21": "nestedVal21", "nestedKey22": false, "nestedKey23": 5 }, { "nestedKey31": "nestedVal31", "nestedKey32": false, "nestedKey33": 6 } ], "myKey1": "FooBar" }"#.to_string(),
-                json: Some(json!({
-                    "myKey2": [
-                        {
-                            "nestedKey11": "nestedVal11",
-                            "nestedKey12": false,
-                            "nestedKey13": 4
-                        },
-                        {
-                            "nestedKey21": "nestedVal21",
-                            "nestedKey22": false,
-                            "nestedKey23": 5
-                        },
-                        {
-                            "nestedKey31": "nestedVal31",
-                            "nestedKey32": false,
-                            "nestedKey33": 6
-                        }
-                    ],
-                    "myKey1": "FooBar"
-                })),
-            },
-        };
-
+        let response2 = make_json_response(
+            200,
+            json!({
+                "myKey2": [
+                    {
+                        "nestedKey11": "nestedVal11",
+                        "nestedKey12": false,
+                        "nestedKey13": 4
+                    },
+                    {
+                        "nestedKey21": "nestedVal21",
+                        "nestedKey22": false,
+                        "nestedKey23": 5
+                    },
+                    {
+                        "nestedKey31": "nestedVal31",
+                        "nestedKey32": false,
+                        "nestedKey33": 6
+                    }
+                ],
+                "myKey1": "FooBar"
+            }),
+        );
 
         let differences = compute_differences(&response1, &response2, false, None);
         assert_eq!(differences.len(), 0, "All differences should be ignored");
@@ -479,37 +415,29 @@ mod tests {
 
     #[test]
     fn test_ignored_paths() {
-        let response1 = HttpResponseData {
-            status_code: 200,
-            headers: HashMap::new(),
-            body: ParsedBody {
-                raw: r#"{"id":"123","timestamp":"2023-01-01T12:00:00Z","data":{"name":"Test","value":42}}"#.to_string(),
-                json: Some(json!({
-                    "id": "123",
-                    "timestamp": "2023-01-01T12:00:00Z",
-                    "data": {
-                        "name": "Test",
-                        "value": 42
-                    }
-                })),
-            },
-        };
+        let response1 = make_json_response(
+            200,
+            json!({
+                "id": "123",
+                "timestamp": "2023-01-01T12:00:00Z",
+                "data": {
+                    "name": "Test",
+                    "value": 42
+                }
+            }),
+        );
 
-        let response2 = HttpResponseData {
-            status_code: 200,
-            headers: HashMap::new(),
-            body: ParsedBody {
-                raw: r#"{"id":"456","timestamp":"2023-01-02T12:00:00Z","data":{"name":"Test","value":42}}"#.to_string(),
-                json: Some(json!({
-                    "id": "456",
-                    "timestamp": "2023-01-02T12:00:00Z",
-                    "data": {
-                        "name": "Test",
-                        "value": 42
-                    }
-                })),
-            },
-        };
+        let response2 = make_json_response(
+            200,
+            json!({
+                "id": "456",
+                "timestamp": "2023-01-02T12:00:00Z",
+                "data": {
+                    "name": "Test",
+                    "value": 42
+                }
+            }),
+        );
 
         // Create a set of paths to ignore
         let mut ignored_paths = HashSet::new();
@@ -575,45 +503,37 @@ mod tests {
 
     #[test]
     fn test_subpath_ignore() {
-        let response1 = HttpResponseData {
-            status_code: 200,
-            headers: HashMap::new(),
-            body: ParsedBody {
-                raw: r#"{"data":{"user":{"id":"123","name":"Alice","details":{"age":30,"email":"alice@example.com"}}}}"#.to_string(),
-                json: Some(json!({
-                    "data": {
-                        "user": {
-                            "id": "123",
-                            "name": "Alice",
-                            "details": {
-                                "age": 30,
-                                "email": "alice@example.com"
-                            }
+        let response1 = make_json_response(
+            200,
+            json!({
+                "data": {
+                    "user": {
+                        "id": "123",
+                        "name": "Alice",
+                        "details": {
+                            "age": 30,
+                            "email": "alice@example.com"
                         }
                     }
-                })),
-            },
-        };
+                }
+            }),
+        );
 
-        let response2 = HttpResponseData {
-            status_code: 200,
-            headers: HashMap::new(),
-            body: ParsedBody {
-                raw: r#"{"data":{"user":{"id":"456","name":"Alice","details":{"age":31,"email":"alice@example.com"}}}}"#.to_string(),
-                json: Some(json!({
-                    "data": {
-                        "user": {
-                            "id": "456",
-                            "name": "Alice",
-                            "details": {
-                                "age": 31,
-                                "email": "alice@example.com"
-                            }
+        let response2 = make_json_response(
+            200,
+            json!({
+                "data": {
+                    "user": {
+                        "id": "456",
+                        "name": "Alice",
+                        "details": {
+                            "age": 31,
+                            "email": "alice@example.com"
                         }
                     }
-                })),
-            },
-        };
+                }
+            }),
+        );
 
         // Ignore the entire user path
         let mut ignored_paths = HashSet::new();
