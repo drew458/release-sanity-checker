@@ -50,13 +50,14 @@ mod tests {
 
     #[test]
     fn test_header_differences() {
-        let mut headers1 = HashMap::new();
-        headers1.insert("Content-Type".to_string(), "application/json".to_string());
-        headers1.insert("X-Test-Header".to_string(), "value1".to_string());
-
-        let mut headers2 = HashMap::new();
-        headers2.insert("Content-Type".to_string(), "application/xml".to_string());
-        headers2.insert("Authorization".to_string(), "Bearer token".to_string());
+        let headers1 = HashMap::from([
+            ("Content-Type".into(), "application/json".into()),
+            ("X-Test-Header".to_string(), "value1".to_string()),
+        ]);
+        let headers2 = HashMap::from([
+            ("Content-Type".to_string(), "application/xml".to_string()),
+            ("Authorization".to_string(), "Bearer token".to_string()),
+        ]);
 
         let response1 = HttpResponseData {
             status_code: 200,
@@ -116,11 +117,10 @@ mod tests {
 
     #[test]
     fn test_headers_ignored() {
-        let mut headers1 = HashMap::new();
-        headers1.insert("Content-Type".to_string(), "application/json".to_string());
-
-        let mut headers2 = HashMap::new();
-        headers2.insert("Content-Type".to_string(), "application/xml".to_string());
+        let headers1 =
+            HashMap::from([("Content-Type".to_string(), "application/json".to_string())]);
+        let headers2 =
+            HashMap::from([("Content-Type".to_string(), "application/xml".to_string())]);
 
         let response1 = HttpResponseData {
             status_code: 200,
@@ -379,6 +379,34 @@ mod tests {
 
         let differences = compute_differences(&response1, &response2, false, None);
         assert_eq!(differences.len(), 0, "All differences should be ignored");
+
+        // Now, let's change the value of two keys, the differences should be spotted...
+        let response2 = make_json_response(
+            200,
+            json!({
+                "myKey2": [
+                    {
+                        "nestedKey11": "nestedVal11",
+                        "nestedKey12": true,
+                        "nestedKey13": 4
+                    },
+                    {
+                        "nestedKey21": "nestedVal21",
+                        "nestedKey22": false,
+                        "nestedKey23": 5
+                    },
+                    {
+                        "nestedKey31": "nestedVal31",
+                        "nestedKey32": false,
+                        "nestedKey33": 7
+                    }
+                ],
+                "myKey1": "FooBar"
+            }),
+        );
+
+        let differences = compute_differences(&response1, &response2, false, None);
+        assert_eq!(differences.len(), 2, "The differences should be spotted");
     }
 
     #[test]
