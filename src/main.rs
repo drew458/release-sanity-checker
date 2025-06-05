@@ -435,7 +435,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                             let query_str = if cli.options.baseline {
                                 "INSERT INTO response (request_id, url, baseline_status_code, baseline_body, baseline_headers)
                                     VALUES (?, ?, ?, ?, ?)
-                                    ON CONFLICT (request_id) DO UPDATE SET url = excluded.url baseline_status_code = excluded.baseline_status_code,
+                                    ON CONFLICT (request_id) DO UPDATE SET url = excluded.url, baseline_status_code = excluded.baseline_status_code,
                                             baseline_body = excluded.baseline_body,
                                             baseline_headers = excluded.baseline_headers".to_string()
                             } else {
@@ -448,6 +448,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                             sqlx::query(&query_str)
                                 .persistent(true)
                                 .bind(&request_config.id)
+                                .bind(&flow.url)
                                 .bind(current_response.status_code)
                                 .bind(&current_response.body.raw,)
                                 .bind(serde_json::to_string(&current_response.headers)?)
