@@ -147,19 +147,17 @@ async fn fetch_response(
 /// Find previous response for a request ID, if it exists
 async fn find_previous_response(
     request_id: &str,
-    url: &str,
     headers_ignored: bool,
     db: &Pool<Sqlite>,
 ) -> Result<Option<HttpResponseData>, Box<dyn std::error::Error + Send + Sync>> {
     let query = if headers_ignored {
-        "SELECT baseline_status_code, baseline_body FROM response WHERE url = ? AND request_id = ?"
+        "SELECT baseline_status_code, baseline_body FROM response WHERE request_id = ?"
     } else {
-        "SELECT baseline_status_code, baseline_body, baseline_headers FROM response WHERE url = ? AND request_id = ?"
+        "SELECT baseline_status_code, baseline_body, baseline_headers FROM response WHERE request_id = ?"
     };
 
     match sqlx::query(query)
         .persistent(true)
-        .bind(url)
         .bind(request_id)
         .fetch_optional(db)
         .await?
@@ -287,9 +285,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 checktime_headers       TEXT,
                 baseline_body           TEXT,
                 checktime_body          TEXT,
-                PRIMARY KEY(request_id, url)
+                PRIMARY KEY(request_id)
             );
-            CREATE INDEX IF NOT EXISTS url_idx ON response(url);",
+            CREATE INDEX IF NOT EXISTS url_idx ON response(request_id);",
     )
     .execute(db.as_ref())
     .await;
@@ -400,10 +398,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                         // If it's the last request of the flow, run the check on the response
                         if i == request_config.flow.len() - 1 {
                             if !cli.options.baseline {
-                                // Try to find a previous response for that request (identified by id and URL)
+                                // Try to find a previous response for that request (identified by id)
                                 let prev_response = find_previous_response(
                                     &request_config.id,
-                                    &flow.url,
                                     cli.options.ignore_headers,
                                     db.as_ref(),
                                 )
@@ -420,8 +417,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                     if differences.is_empty() {
                                         if cli.options.verbose {
                                             println!(
-                                                "\n✅ Request '{}' of URL '{}' has not changed. ✅",
-                                                request_config.id, flow.url
+                                                "\n✅ Request with ID: '{}' has not changed. ✅",
+                                                request_config.id
                                             );
                                         }
                                     } else {
@@ -429,7 +426,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
                                         print_sender.send(DifferencesPrinterMessage::PrintDifferences {
-                                            differences, request_id: request_config.id.clone(), url: flow.url.clone()
+                                            differences, request_id: request_config.id.clone()
                                         }).await?
                                     }
                                 }
@@ -438,20 +435,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                             let query_str = if cli.options.baseline {
                                 "INSERT INTO response (request_id, url, baseline_status_code, baseline_body, baseline_headers)
                                     VALUES (?, ?, ?, ?, ?)
-                                    ON CONFLICT (request_id, url) DO UPDATE SET baseline_status_code = excluded.baseline_status_code,
+                                    ON CONFLICT (request_id) DO UPDATE SET url = excluded.url baseline_status_code = excluded.baseline_status_code,
                                             baseline_body = excluded.baseline_body,
                                             baseline_headers = excluded.baseline_headers".to_string()
                             } else {
                                 "INSERT INTO response (request_id, url, checktime_status_code, checktime_body, checktime_headers)
                                     VALUES (?, ?, ?, ?, ?)
-                                    ON CONFLICT (request_id, url) DO UPDATE SET checktime_status_code = excluded.checktime_status_code,
+                                    ON CONFLICT (request_id) DO UPDATE SET checktime_status_code = excluded.checktime_status_code,
                                             checktime_body = excluded.checktime_body,
                                             checktime_headers = excluded.checktime_headers".to_string()
                             };
                             sqlx::query(&query_str)
                                 .persistent(true)
                                 .bind(&request_config.id)
-                                .bind(&flow.url)
                                 .bind(current_response.status_code)
                                 .bind(&current_response.body.raw,)
                                 .bind(serde_json::to_string(&current_response.headers)?)

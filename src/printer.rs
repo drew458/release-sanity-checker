@@ -9,8 +9,7 @@ pub struct DifferencesPrinter {
 pub enum DifferencesPrinterMessage {
     PrintDifferences {
         differences: Vec<Difference>,
-        request_id: String,
-        url: String,
+        request_id: String
     },
 }
 
@@ -28,8 +27,7 @@ impl DifferencesPrinter {
         match msg {
             DifferencesPrinterMessage::PrintDifferences {
                 differences,
-                request_id,
-                url,
+                request_id
             } => {
                 assert!(!differences.is_empty());
 
@@ -39,8 +37,8 @@ impl DifferencesPrinter {
                 println!(
                     "{}",
                     format!(
-                        "Differences detected for request '{}' of URL '{}'",
-                        request_id, url
+                        "Differences detected for request with ID: '{}'",
+                        request_id
                     )
                     .yellow()
                 );
