@@ -135,8 +135,8 @@ func findJSONDifferences(
 		return diffs
 	}
 
-	// Check if path should be ignored
 	currentPath := "/" + path
+	// Check if path should be ignored: complete match
 	if _, ok := ignoredPaths[currentPath]; ok {
 		return diffs
 	}
@@ -145,6 +145,7 @@ func findJSONDifferences(
 			continue
 		}
 		ignoredPath = strings.TrimSuffix(ignoredPath, "/")
+		// Check if path should be ignored: the current path starts with something to ignore
 		if currentPath == ignoredPath || strings.HasPrefix(currentPath, ignoredPath+"/") {
 			return diffs
 		}
@@ -182,14 +183,11 @@ func compareObjects(
 	currentDepth int,
 ) []Difference {
 	var diffs []Difference
-	keys1 := getMapKeys(map1)
-	keys2 := getMapKeys(map2)
 
 	// Find removed and changed keys
-	for key := range keys1 {
-		newPath := buildPath(path, key)
-		val1 := map1[key]
-		val2, ok := map2[key]
+	for key1, val1 := range map1 {
+		newPath := buildPath(path, key1)
+		val2, ok := map2[key1]
 		if !ok {
 			diffs = append(diffs, Difference{
 				Type:   BodyValueRemoved,
@@ -203,16 +201,17 @@ func compareObjects(
 	}
 
 	// Find added keys
-	for key := range keys2 {
-		if _, ok := keys1[key]; !ok {
-			newPath := buildPath(path, key)
+	for key2, val2 := range map2 {
+		if _, ok := map1[key2]; !ok {
+			newPath := buildPath(path, key2)
 			diffs = append(diffs, Difference{
 				Type:   BodyValueAdded,
 				Path:   newPath,
-				NewVal: formatValue(map2[key], 50),
+				NewVal: formatValue(val2, 50),
 			})
 		}
 	}
+
 	return diffs
 }
 
@@ -274,14 +273,6 @@ func compareArrays(
 }
 
 // --- Diff Helpers ---
-
-func getMapKeys(m map[string]any) map[string]struct{} {
-	keys := make(map[string]struct{}, len(m))
-	for k := range m {
-		keys[k] = struct{}{}
-	}
-	return keys
-}
 
 func buildPath(base, key string) string {
 	if base == "" {
