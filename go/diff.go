@@ -189,12 +189,14 @@ func compareObjects(
 		newPath := buildPath(path, key1)
 		val2, ok := map2[key1]
 		if !ok {
+			// The key of the first map is not present in the second map: it was removed.
 			diffs = append(diffs, Difference{
 				Type:   BodyValueRemoved,
 				Path:   newPath,
 				OldVal: formatValue(val1, 50),
 			})
 		} else {
+			// The key of the first map is present in the second map: we need to check is the value has changed.
 			// Recurse
 			diffs = append(diffs, findJSONDifferences(newPath, val1, val2, ignoredPaths, currentDepth+1)...)
 		}
@@ -203,6 +205,7 @@ func compareObjects(
 	// Find added keys
 	for key2, val2 := range map2 {
 		if _, ok := map1[key2]; !ok {
+			// A key in the second map has been added compared to the first map.
 			newPath := buildPath(path, key2)
 			diffs = append(diffs, Difference{
 				Type:   BodyValueAdded,
@@ -223,6 +226,8 @@ func compareArrays(
 	currentDepth int,
 ) []Difference {
 	var diffs []Difference
+
+	// Check if the arrays differ in length.
 	if len(arr1) != len(arr2) {
 		diffs = append(diffs, Difference{
 			Type:   ArrayLengthChanged,
@@ -232,7 +237,6 @@ func compareArrays(
 		})
 	}
 
-	// This is the O(N^2) Go equivalent of Rust's HashSet-based diff.
 	// It finds elements in one array that are not DeepEqual to any in the other.
 	matches1 := make([]bool, len(arr1))
 	matches2 := make([]bool, len(arr2))
