@@ -25,7 +25,7 @@ use std::{
 };
 use tokio::{
     fs,
-    sync::{RwLock, Semaphore},
+    sync::{Mutex, Semaphore},
     task::JoinSet,
 };
 
@@ -323,7 +323,7 @@ async fn main() -> Result<()> {
         .build()
         .context("Failed to build HTTP client")?;
 
-    let url_to_semaphore = Arc::new(RwLock::new(HashMap::new()));
+    let url_to_semaphore = Arc::new(Mutex::new(HashMap::new()));
     let requests_counter = Arc::new(AtomicUsize::new(0));
     let changed_requests_counter = Arc::new(AtomicUsize::new(0));
 
@@ -354,12 +354,9 @@ async fn main() -> Result<()> {
                 let requests_counter = requests_counter.clone();
                 let changed_requests_counter = changed_requests_counter.clone();
                 let print_sender = sender.clone();
-                let baseline_mode = cli.options.baseline;
-                let ignore_headers = cli.options.ignore_headers;
-                let verbose = cli.options.verbose;
 
                 tasks.spawn(async move {
-                    requests_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    requests_counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 
                     debug!("Checking request '{}'", request_config.id);
 
@@ -367,25 +364,12 @@ async fn main() -> Result<()> {
                     for i in 0..request_config.flow.len() {
                         let flow = request_config.flow.get(i).unwrap();
 
-                        let mut semaphore_exists_for_url = true;
-                        {
-                            let url_to_semaphore = url_to_semaphore.read().await;
-                            if url_to_semaphore.get(&flow.url).is_none() {
-                                semaphore_exists_for_url = false;
-                            }
-                        }
-                        if !semaphore_exists_for_url {
-                            let mut url_to_semaphore = url_to_semaphore.write().await;
-                            url_to_semaphore.insert(
-                                flow.url.clone(),
-                                Arc::new(Semaphore::new(requests_per_host)),
-                            );
-                        }
-                        let semaphore: Arc<Semaphore>;
-                        {
-                            let url_to_semaphore = url_to_semaphore.read().await;
-                            semaphore = url_to_semaphore.get(&flow.url).cloned().unwrap();
-                        }
+                        let semaphore = {
+                            let mut map = url_to_semaphore.lock().await;
+                            map.entry(flow.url.clone())
+                                .or_insert_with(|| Arc::new(Semaphore::new(requests_per_host)))
+                                .clone()
+                        };
 
                         let mut retries = max_retries.clone();
                         let mut current_response = None;
@@ -426,11 +410,11 @@ async fn main() -> Result<()> {
 
                         // If it's the last request of the flow, run the check on the response
                         if i == request_config.flow.len() - 1 {
-                            if !baseline_mode {
+                            if !cli.options.baseline {
                                 // Try to find a previous response for that request (identified by id)
                                 let prev_response = find_previous_response(
                                     &request_config.id,
-                                    ignore_headers,
+                                    cli.options.ignore_headers,
                                     db.as_ref(),
                                 )
                                     .await?;
@@ -439,12 +423,12 @@ async fn main() -> Result<()> {
                                     let differences = compute_differences(
                                         &prev_response,
                                         &current_response,
-                                        ignore_headers,
+                                        cli.options.ignore_headers,
                                         request_config.ignore_paths.as_ref(),
                                     );
 
                                     if differences.is_empty() {
-                                        if verbose {
+                                        if cli.options.verbose {
                                             println!(
                                                 "\n✅ Request with ID: '{}' has not changed. ✅",
                                                 request_config.id
@@ -461,7 +445,7 @@ async fn main() -> Result<()> {
                                 }
                             }
 
-                            let query_str = if baseline_mode {
+                            let query_str = if cli.options.baseline {
                                 "INSERT INTO response (request_id, url, baseline_status_code, baseline_body, baseline_headers)
                                     VALUES (?, ?, ?, ?, ?)
                                     ON CONFLICT (request_id) DO UPDATE SET url = excluded.url, baseline_status_code = excluded.baseline_status_code,
