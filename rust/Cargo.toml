@@ -13,6 +13,8 @@ colored = "3.0.0"
 log = "0.4"
 env_logger = "0.11.7"
 clap = { version = "4.5.32", features = ["derive"] }
+anyhow = "1.0.100"
+
 
 [profile.release]
 lto = true         # Enable Link-Time Optimization for better performance
