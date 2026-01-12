@@ -16,8 +16,8 @@ pub enum Difference {
     },
     HeaderValueChanged {
         header_name: String,
-        old_val: String,
-        new_val: String,
+        old_val: Vec<String>,
+        new_val: Vec<String>,
     },
     HeaderValueRemoved {
         header_name: String,
@@ -71,8 +71,8 @@ impl Difference {
                 new_val,
             } => {
                 println!("    Changed Header: {}", header_name);
-                println!("      - {}", old_val.green());
-                println!("      + {}", new_val.red());
+                println!("      - {}", format!("{:?}", old_val).green());
+                println!("      + {}", format!("{:?}", new_val).red());
             }
             Difference::HeaderValueRemoved { header_name } => {
                 println!("    Removed Header: {}", header_name);
@@ -217,9 +217,6 @@ fn compare_arrays_order_independent(
     arr1: &[Value],
     arr2: &[Value],
     differences: &mut Vec<Difference>,
-    max_depth: usize,
-    current_depth: usize,
-    ignored_paths: &Option<&HashSet<String>>,
 ) {
     if arr1.len() != arr2.len() {
         differences.push(Difference::ArrayLengthChanged {
@@ -229,73 +226,52 @@ fn compare_arrays_order_independent(
         });
     }
 
-    let set1: HashSet<&Value> = arr1.iter().collect();
-    let set2: HashSet<&Value> = arr2.iter().collect();
-
-    let removed_elements = set1.difference(&set2);
-    for removed_value in removed_elements {
-        differences.push(Difference::ArrayElementRemoved {
-            path: format!("{}[*]", path),
-            value: format_value(removed_value, 50),
-        });
+    let mut counts1 = std::collections::HashMap::new();
+    for val in arr1 {
+        *counts1.entry(val).or_insert(0) += 1;
     }
 
-    let added_elements = set2.difference(&set1);
-    for added_value in added_elements {
-        differences.push(Difference::ArrayElementAdded {
-            path: format!("{}[*]", path),
-            value: format_value(added_value, 50),
-        });
+    let mut counts2 = std::collections::HashMap::new();
+    for val in arr2 {
+        *counts2.entry(val).or_insert(0) += 1;
     }
 
-    let common_elements = set1.intersection(&set2);
-    for common_value in common_elements {
-        // Find indices of common values in both arrays (needed for recursion)
-        let indices1: Vec<usize> = arr1
-            .iter()
-            .enumerate()
-            .filter_map(|(index, val)| {
-                if val == *common_value {
-                    Some(index)
-                } else {
-                    None
-                }
-            })
-            .collect();
-        let indices2: Vec<usize> = arr2
-            .iter()
-            .enumerate()
-            .filter_map(|(index, val)| {
-                if val == *common_value {
-                    Some(index)
-                } else {
-                    None
-                }
-            })
-            .collect();
+    let keys1: HashSet<&&Value> = counts1.keys().collect();
+    let keys2: HashSet<&&Value> = counts2.keys().collect();
 
-        // Assuming there can be multiple identical values, to avoid re-comparing the same elements, just compare the first occurrences
-        if let (Some(&index1), Some(&index2)) = (indices1.first(), indices2.first()) {
-            let val1 = &arr1[index1];
-            let val2 = &arr2[index2];
-
-            match (val1, val2) {
-                (Value::Object(_), Value::Object(_)) | (Value::Array(_), Value::Array(_)) => {
-                    let new_path = format!("{}[*]", path); // Use [*] to indicate order-independent position
-                    find_json_differences(
-                        &new_path,
-                        val1,
-                        val2,
-                        differences,
-                        max_depth,
-                        current_depth + 1,
-                        ignored_paths,
-                    );
-                }
-                _ => {} // Primitives are already compared by set difference
+    // Elements in arr1 but not in arr2 (or with higher count)
+    for &&val in &keys1 {
+        let count1 = counts1[val];
+        let count2 = *counts2.get(val).unwrap_or(&0);
+        if count1 > count2 {
+            for _ in 0..(count1 - count2) {
+                differences.push(Difference::ArrayElementRemoved {
+                    path: format!("{}[*]", path),
+                    value: format_value(val, 50),
+                });
             }
         }
     }
+
+    // Elements in arr2 but not in arr1 (or with higher count)
+    for &&val in &keys2 {
+        let count1 = *counts1.get(val).unwrap_or(&0);
+        let count2 = counts2[val];
+        if count2 > count1 {
+            for _ in 0..(count2 - count1) {
+                differences.push(Difference::ArrayElementAdded {
+                    path: format!("{}[*]", path),
+                    value: format_value(val, 50),
+                });
+            }
+        }
+    }
+
+    // If both are objects or arrays, we might still want to recurse to find deep differences
+    // BUT only for elements that were NOT identical (otherwise we find nothing).
+    // The current order-independent logic is simplified: either elements match exactly or they don't.
+    // If we want to find "similar" objects in the array, we'd need a heuristic to match them.
+    // Given the current design, we'll stick to exact match for order-independent elements.
 }
 
 pub fn find_json_differences(
@@ -313,20 +289,14 @@ pub fn find_json_differences(
 
     let current_path = format!("/{}", path);
     if let Some(ignored_paths) = ignored_paths {
-        for ignored_path in ignored_paths.iter() {
-            // Normalize the ignored path by removing trailing slash (if any)
-            let ignored_path = if ignored_path.ends_with('/') && ignored_path.len() > 1 {
-                ignored_path.trim_end_matches('/')
-            } else {
-                ignored_path.as_str()
-            };
-            // If the current pointer exactly matches the ignore path
-            // or is a sub-path of the ignore path, skip diffing.
-            if current_path == ignored_path
-                || current_path.starts_with(&format!("{}{}", ignored_path, "/"))
-            {
-                return;
-            }
+        // If the current pointer exactly matches the ignore path
+        // or is a sub-path of the ignore path, skip diffing.
+        if ignored_paths.contains(&current_path)
+            || ignored_paths
+                .iter()
+                .any(|ip| current_path.starts_with(&format!("{}/", ip)))
+        {
+            return;
         }
     }
 
@@ -347,10 +317,7 @@ pub fn find_json_differences(
                 path,
                 arr1,
                 arr2,
-                differences,
-                max_depth,
-                current_depth,
-                ignored_paths,
+                differences
             );
         }
         // If the current values are either a Number, String, Boolean, Null, just perform a simple comparison
@@ -371,6 +338,20 @@ pub fn compute_differences(
     headers_ignored: bool,
     ignored_paths: Option<&HashSet<String>>,
 ) -> Vec<Difference> {
+    // Pre-normalize ignored paths
+    let normalized_ignored_paths: Option<HashSet<String>> = ignored_paths.map(|paths| {
+        paths
+            .iter()
+            .map(|p| {
+                if p.ends_with('/') && p.len() > 1 {
+                    p.trim_end_matches('/').to_string()
+                } else {
+                    p.clone()
+                }
+            })
+            .collect()
+    });
+    let ignored_paths_ref = normalized_ignored_paths.as_ref();
     let mut differences = Vec::new();
 
     if response1.status_code != response2.status_code {
@@ -379,8 +360,6 @@ pub fn compute_differences(
             new_val: response2.status_code,
         });
     }
-
-    let diff_preview_len = 300;
 
     if !headers_ignored {
         let headers1 = &response1.headers;
@@ -391,18 +370,10 @@ pub fn compute_differences(
                 match headers2.get(key) {
                     Some(value2) => {
                         if value1 != value2 {
-                            let min_len = std::cmp::min(value1.len(), value2.len());
-
                             differences.push(Difference::HeaderValueChanged {
                                 header_name: key.to_string(),
-                                old_val: value1
-                                    .chars()
-                                    .take(min_len.min(diff_preview_len) + 1)
-                                    .collect::<String>(),
-                                new_val: value2
-                                    .chars()
-                                    .take(min_len.min(diff_preview_len) + 1)
-                                    .collect::<String>(),
+                                old_val: value1.clone(),
+                                new_val: value2.clone(),
                             });
                         }
                     }
@@ -426,7 +397,15 @@ pub fn compute_differences(
 
     match (&response1.body.json, &response2.body.json) {
         (Some(body1), Some(body2)) => {
-            find_json_differences("", body1, body2, &mut differences, 10, 0, &ignored_paths);
+            find_json_differences(
+                "",
+                body1,
+                body2,
+                &mut differences,
+                10,
+                0,
+                &ignored_paths_ref,
+            );
         }
         // String body
         _ => {

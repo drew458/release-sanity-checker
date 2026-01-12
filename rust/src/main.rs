@@ -39,24 +39,32 @@ struct ParsedBody {
 struct HttpResponseData {
     status_code: u16,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    headers: HashMap<String, String>,
+    headers: HashMap<String, Vec<String>>,
     body: ParsedBody,
 }
 
 impl HttpResponseData {
-    fn new(status_code: u16, headers: HashMap<String, String>, body: String) -> HttpResponseData {
+    fn new(
+        status_code: u16,
+        headers: HashMap<String, Vec<String>>,
+        body: String,
+    ) -> HttpResponseData {
         let mut json_body = None;
 
         // Check if the response is JSON
-        match (headers.get("Content-Type"), headers.get("content-type")) {
-            (Some(content_type), Some(_))
-            | (Some(content_type), None)
-            | (None, Some(content_type)) => {
-                if content_type.starts_with("application/json") {
+        match headers
+            .get("Content-Type")
+            .or_else(|| headers.get("content-type"))
+        {
+            Some(content_types) => {
+                if content_types
+                    .iter()
+                    .any(|ct| ct.starts_with("application/json"))
+                {
                     json_body = serde_json::from_str(&body).ok()
                 }
             }
-            _ => {}
+            None => {}
         }
 
         HttpResponseData {
@@ -83,7 +91,7 @@ struct RequestResponse {
 struct RequestConfig {
     url: String,
     #[serde(default)]
-    headers: HashMap<String, String>,
+    headers: HashMap<String, Vec<String>>,
     #[serde(default)]
     body: Value,
 }
@@ -102,7 +110,7 @@ struct SanityCheckConfig {
 
 async fn fetch_response(
     url: &str,
-    headers: &HashMap<String, String>,
+    headers: &HashMap<String, Vec<String>>,
     body: &Value,
     client: &Client,
     semaphore: &Semaphore,
@@ -113,18 +121,20 @@ async fn fetch_response(
         client.post(url).body(body.to_string())
     };
 
-    let header_map: reqwest::header::HeaderMap = headers
-        .iter()
-        .filter_map(
-            |(k, v)| match (k.parse::<reqwest::header::HeaderName>(), v.parse()) {
-                (Ok(header_name), Ok(header_value)) => Some((header_name, header_value)),
-                _ => {
-                    eprintln!("Could not parse header {}:{}", k, v);
-                    None
+    let mut header_map = reqwest::header::HeaderMap::new();
+    for (k, vs) in headers {
+        if let Ok(header_name) = k.parse::<reqwest::header::HeaderName>() {
+            for v in vs {
+                if let Ok(header_value) = v.parse() {
+                    header_map.append(header_name.clone(), header_value);
+                } else {
+                    eprintln!("Could not parse header value for {}:{}", k, v);
                 }
-            },
-        )
-        .collect();
+            }
+        } else {
+            eprintln!("Could not parse header name: {}", k);
+        }
+    }
 
     debug!("Acquiring semaphore for request to {}...", url);
     let _permit = semaphore
@@ -142,11 +152,13 @@ async fn fetch_response(
         .with_context(|| format!("Failed to send request to {}", url))?;
 
     let status = response.status().as_u16();
-    let resp_headers = response
-        .headers()
-        .iter()
-        .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or_default().to_string()))
-        .collect();
+    let mut resp_headers: HashMap<String, Vec<String>> = HashMap::new();
+    for (k, v) in response.headers().iter() {
+        resp_headers
+            .entry(k.to_string())
+            .or_default()
+            .push(v.to_str().unwrap_or_default().to_string());
+    }
     let text = response
         .text()
         .await

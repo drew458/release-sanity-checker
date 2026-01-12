@@ -8,7 +8,7 @@ mod tests {
     fn make_json_response(status_code: u16, json: serde_json::Value) -> HttpResponseData {
         HttpResponseData {
             status_code,
-            headers: HashMap::from([("Content-Type".into(), "application/json".into())]),
+            headers: HashMap::from([("Content-Type".into(), vec!["application/json".into()])]),
             body: ParsedBody {
                 json: Some(json),
                 ..Default::default()
@@ -51,12 +51,18 @@ mod tests {
     #[test]
     fn test_header_differences() {
         let headers1 = HashMap::from([
-            ("Content-Type".into(), "application/json".into()),
-            ("X-Test-Header".to_string(), "value1".to_string()),
+            ("Content-Type".into(), vec!["application/json".into()]),
+            ("X-Test-Header".to_string(), vec!["value1".to_string()]),
         ]);
         let headers2 = HashMap::from([
-            ("Content-Type".to_string(), "application/xml".to_string()),
-            ("Authorization".to_string(), "Bearer token".to_string()),
+            (
+                "Content-Type".to_string(),
+                vec!["application/xml".to_string()],
+            ),
+            (
+                "Authorization".to_string(),
+                vec!["Bearer token".to_string()],
+            ),
         ]);
 
         let response1 = HttpResponseData {
@@ -94,8 +100,8 @@ mod tests {
                     new_val,
                 } => {
                     assert_eq!(header_name, "Content-Type");
-                    assert_eq!(old_val, "application/json");
-                    assert_eq!(new_val, "application/xml");
+                    assert_eq!(old_val, vec!["application/json".to_string()]);
+                    assert_eq!(new_val, vec!["application/xml".to_string()]);
                     found_changed = true;
                 }
                 Difference::HeaderValueRemoved { header_name } => {
@@ -117,10 +123,14 @@ mod tests {
 
     #[test]
     fn test_headers_ignored() {
-        let headers1 =
-            HashMap::from([("Content-Type".to_string(), "application/json".to_string())]);
-        let headers2 =
-            HashMap::from([("Content-Type".to_string(), "application/xml".to_string())]);
+        let headers1 = HashMap::from([(
+            "Content-Type".to_string(),
+            vec!["application/json".to_string()],
+        )]);
+        let headers2 = HashMap::from([(
+            "Content-Type".to_string(),
+            vec!["application/xml".to_string()],
+        )]);
 
         let response1 = HttpResponseData {
             status_code: 200,
@@ -406,7 +416,7 @@ mod tests {
         );
 
         let differences = compute_differences(&response1, &response2, false, None);
-        assert_eq!(differences.len(), 2, "The differences should be spotted");
+        assert_eq!(differences.len(), 4, "The differences should be spotted");
     }
 
     #[test]
@@ -589,6 +599,97 @@ mod tests {
             assert_eq!(new_val, "31");
         } else {
             panic!("Expected BodyValueChanged difference");
+        }
+    }
+
+    #[test]
+    fn test_multiple_header_values() {
+        let headers1 = HashMap::from([(
+            "Cache-Control".into(),
+            vec!["no-cache".into(), "no-store".into()],
+        )]);
+        let headers2 = HashMap::from([(
+            "Cache-Control".into(),
+            vec!["no-cache".into(), "private".into()],
+        )]);
+
+        let response1 = HttpResponseData {
+            status_code: 200,
+            headers: headers1,
+            body: ParsedBody::default(),
+        };
+
+        let response2 = HttpResponseData {
+            status_code: 200,
+            headers: headers2,
+            body: ParsedBody::default(),
+        };
+
+        let differences = compute_differences(&response1, &response2, false, None);
+
+        assert_eq!(differences.len(), 1);
+        if let Difference::HeaderValueChanged {
+            header_name,
+            old_val,
+            new_val,
+        } = &differences[0]
+        {
+            assert_eq!(header_name, "Cache-Control");
+            assert_eq!(
+                old_val,
+                &vec!["no-cache".to_string(), "no-store".to_string()]
+            );
+            assert_eq!(
+                new_val,
+                &vec!["no-cache".to_string(), "private".to_string()]
+            );
+        } else {
+            panic!("Expected HeaderValueChanged");
+        }
+    }
+
+    #[test]
+    fn test_duplicate_array_elements() {
+        let response1 = make_json_response(200, json!([1, 1, 2]));
+        let response2 = make_json_response(200, json!([1, 2, 2]));
+
+        let differences = compute_differences(&response1, &response2, false, None);
+
+        // Now implementation correctly detects one '1' removed and one '2' added
+        assert_eq!(differences.len(), 2);
+        let mut removed_1 = false;
+        let mut added_2 = false;
+
+        for diff in differences {
+            match diff {
+                Difference::ArrayElementRemoved { path: _, value } if value == "1" => {
+                    removed_1 = true
+                }
+                Difference::ArrayElementAdded { path: _, value } if value == "2" => added_2 = true,
+                _ => {}
+            }
+        }
+        assert!(removed_1);
+        assert!(added_2);
+    }
+
+    #[test]
+    fn test_format_value_truncation() {
+        let long_string = "a".repeat(100);
+        let response1 = make_json_response(200, json!({"msg": long_string}));
+        let response2 = make_json_response(200, json!({"msg": "short"}));
+
+        let differences = compute_differences(&response1, &response2, false, None);
+
+        assert_eq!(differences.len(), 1);
+        if let Difference::BodyValueChanged {
+            path: _,
+            old_val,
+            new_val: _,
+        } = &differences[0]
+        {
+            assert!(old_val.contains("..."));
+            assert!(old_val.len() <= 55); // 50 + quotes + ...
         }
     }
 }
