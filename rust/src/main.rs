@@ -49,42 +49,32 @@ impl HttpResponseData {
         headers: HashMap<String, Vec<String>>,
         body: String,
     ) -> HttpResponseData {
+        let normalized_headers: HashMap<String, Vec<String>> = headers
+            .into_iter()
+            .map(|(k, v)| (k.to_lowercase(), v))
+            .collect();
+
         let mut json_body = None;
 
-        // Check if the response is JSON
-        match headers
-            .get("Content-Type")
-            .or_else(|| headers.get("content-type"))
-        {
-            Some(content_types) => {
-                if content_types
-                    .iter()
-                    .any(|ct| ct.starts_with("application/json"))
-                {
-                    json_body = serde_json::from_str(&body).ok()
-                }
+        // Check if the response is JSON (using normalized header key)
+        if let Some(content_types) = normalized_headers.get("content-type") {
+            if content_types
+                .iter()
+                .any(|ct| ct.to_lowercase().starts_with("application/json"))
+            {
+                json_body = serde_json::from_str(&body).ok()
             }
-            None => {}
         }
 
         HttpResponseData {
             status_code,
-            headers,
+            headers: normalized_headers,
             body: ParsedBody {
                 json: json_body,
                 raw: body,
             },
         }
     }
-}
-
-#[derive(Serialize, Deserialize, Debug, Default)]
-struct RequestResponse {
-    request_id: String,
-    url: String,
-    status_code: u16,
-    headers: String,
-    body: String,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -196,14 +186,11 @@ async fn find_previous_response(
 
             let body: String = row.get("baseline_body");
 
-            Ok(Some(HttpResponseData {
-                status_code: row.get("baseline_status_code"),
+            Ok(Some(HttpResponseData::new(
+                row.get("baseline_status_code"),
                 headers,
-                body: ParsedBody {
-                    json: serde_json::from_str(&body).ok(),
-                    raw: body,
-                },
-            }))
+                body,
+            )))
         }
         None => Ok(None),
     }
