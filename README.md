@@ -6,20 +6,6 @@ This tool helps you ensure the consistency of your API responses over time. It f
 
 - **Download binary**  
 Download your preferred version from [releases](https://github.com/drew458/release-sanity-checker/releases) and just run `release-sanity-checker <FILENAME>`.
-
-- **Container**  
-Assuming you have Podman or Docker installed on your machine:
-    - ```bash
-      podman build -t release-sanity-checker .
-      ```
-    - ```bash
-      podman run -v "./examples/example-post.json:/app/config.json" release-sanity-checker --ignore-headers config.json
-      ```
-    
-    If you want to run it against a directory, use:  
-    - ```bash
-      podman run -v "./examples/:/app/examples/" release-sanity-checker --directory ./examples
-      ```
  
 ## ▶️ Usage
 
