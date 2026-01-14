@@ -132,7 +132,3 @@ The configuration file is a JSON file containing an array of request definitions
     ]
 }
 ```
-
-## 📊 Database
-
-The tool uses a SQLite database file named `release-sanity-checker-data.db` to store previous responses. This file is created in the current working directory along with the WAL files (`release-sanity-checker-data.db-shm` and `release-sanity-checker-data.db-wal`).
