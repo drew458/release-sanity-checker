@@ -21,6 +21,13 @@ release-sanity-checker [options] <config_path>
     --baseline: Build the baseline for the requests. This will overwrite existing responses in the database with the current responses.
     --verbose: Print the full response body/header when changed and response that didn't change.
 
+### 🌐 Environment Variables
+
+| Name | Default | Description |
+|---|---|---|
+| REQUESTS_PER_HOST | 30 | The maximum number of concurrent requests per host. |
+| MAX_RETRIES | 3 | The maximum number of retries for a failed request (minimum 1). |
+
 ### 🚦 Examples
 
 - **Build the baseline**
