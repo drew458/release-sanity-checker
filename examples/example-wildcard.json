@@ -1,0 +1,49 @@
+{
+    "requests": [
+        {
+            "id": "wildcard-example-1",
+            "flow": [
+                {
+                    "id": "1",
+                    "url": "https://api.restful-api.dev/objects?id=3&id=5&id=10",
+                    "headers": {
+                        "Content-Type": "application/json"
+                    }
+                }
+            ],
+            "ignore_paths": [
+                "/*/data/price",
+                "/*/updatedAt"
+            ]
+        },
+        {
+            "id": "wildcard-example-2",
+            "flow": [
+                {
+                    "id": "1",
+                    "url": "https://api.restful-api.dev/objects",
+                    "headers": {
+                        "Content-Type": "application/json"
+                    }
+                }
+            ],
+            "ignore_paths": [
+                "/*/createdAt",
+                "/*/data/generation"
+            ]
+        },
+        {
+            "id": "exact-and-wildcard",
+            "flow": [
+                {
+                    "id": "1",
+                    "url": "https://api.restful-api.dev/objects/7"
+                }
+            ],
+            "ignore_paths": [
+                "/id",
+                "/data/*/timestamp"
+            ]
+        }
+    ]
+}

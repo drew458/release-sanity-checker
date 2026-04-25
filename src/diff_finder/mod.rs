@@ -4,6 +4,7 @@ use std::collections::HashSet;
 
 use colored::Colorize;
 use serde_json::Value;
+use wildmatch::WildMatch;
 
 use crate::HttpResponseData;
 
@@ -217,6 +218,9 @@ fn compare_arrays_order_independent(
     arr1: &[Value],
     arr2: &[Value],
     differences: &mut Vec<Difference>,
+    _max_depth: usize,
+    _current_depth: usize,
+    ignored_paths: &Option<&HashSet<String>>,
 ) {
     if arr1.len() != arr2.len() {
         differences.push(Difference::ArrayLengthChanged {
@@ -226,13 +230,59 @@ fn compare_arrays_order_independent(
         });
     }
 
+    // Helper function to check if a field within an array element should be ignored
+    let should_ignore_field = |index: usize, field_path: &str| -> bool {
+        if let Some(ignored_paths) = ignored_paths {
+            let full_path = format!("/{}/{}/{}", path, index, field_path);
+            ignored_paths.iter().any(|pattern| {
+                if pattern.contains('*') {
+                    WildMatch::new(pattern).matches(&full_path)
+                } else {
+                    &full_path == pattern || full_path.starts_with(&format!("{}/", pattern))
+                }
+            })
+        } else {
+            false
+        }
+    };
+
+    // Filter objects in arrays by removing ignored fields before comparison
+    let filter_object = |obj: &serde_json::Map<String, Value>, index: usize| -> serde_json::Map<String, Value> {
+        obj.iter()
+            .filter_map(|(key, value)| {
+                if should_ignore_field(index, key) {
+                    None
+                } else {
+                    Some((key.clone(), value.clone()))
+                }
+            })
+            .collect()
+    };
+
+    // Create filtered versions of arrays for comparison
+    let filtered_arr1: Vec<Value> = arr1.iter().enumerate().map(|(i, val)| {
+        if let Value::Object(obj) = val {
+            Value::Object(filter_object(obj, i))
+        } else {
+            val.clone()
+        }
+    }).collect();
+
+    let filtered_arr2: Vec<Value> = arr2.iter().enumerate().map(|(i, val)| {
+        if let Value::Object(obj) = val {
+            Value::Object(filter_object(obj, i))
+        } else {
+            val.clone()
+        }
+    }).collect();
+
     let mut counts1 = std::collections::HashMap::new();
-    for val in arr1 {
+    for val in &filtered_arr1 {
         *counts1.entry(val).or_insert(0) += 1;
     }
 
     let mut counts2 = std::collections::HashMap::new();
-    for val in arr2 {
+    for val in &filtered_arr2 {
         *counts2.entry(val).or_insert(0) += 1;
     }
 
@@ -266,12 +316,6 @@ fn compare_arrays_order_independent(
             }
         }
     }
-
-    // If both are objects or arrays, we might still want to recurse to find deep differences
-    // BUT only for elements that were NOT identical (otherwise we find nothing).
-    // The current order-independent logic is simplified: either elements match exactly or they don't.
-    // If we want to find "similar" objects in the array, we'd need a heuristic to match them.
-    // Given the current design, we'll stick to exact match for order-independent elements.
 }
 
 pub fn find_json_differences(
@@ -289,13 +333,16 @@ pub fn find_json_differences(
 
     let current_path = format!("/{}", path);
     if let Some(ignored_paths) = ignored_paths {
-        // If the current pointer exactly matches the ignore path
-        // or is a sub-path of the ignore path, skip diffing.
-        if ignored_paths.contains(&current_path)
-            || ignored_paths
-                .iter()
-                .any(|ip| current_path.starts_with(&format!("{}/", ip)))
-        {
+        // Check if the current path matches any of the wildcard patterns
+        if ignored_paths.iter().any(|pattern| {
+            // Try wildcard matching first
+            if pattern.contains('*') {
+                WildMatch::new(pattern).matches(&current_path)
+            } else {
+                // For exact paths, check exact match or if it's a subpath
+                &current_path == pattern || current_path.starts_with(&format!("{}/", pattern))
+            }
+        }) {
             return;
         }
     }
@@ -317,7 +364,10 @@ pub fn find_json_differences(
                 path,
                 arr1,
                 arr2,
-                differences
+                differences,
+                max_depth,
+                current_depth,
+                ignored_paths,
             );
         }
         // If the current values are either a Number, String, Boolean, Null, just perform a simple comparison
